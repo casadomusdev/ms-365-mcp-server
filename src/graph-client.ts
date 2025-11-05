@@ -1,5 +1,4 @@
 import logger from './logger.js';
-import AuthManager from './auth.js';
 import { refreshAccessToken } from './lib/microsoft-auth.js';
 
 interface GraphRequestOptions {
@@ -30,12 +29,16 @@ interface McpResponse {
   [key: string]: unknown;
 }
 
+type TokenProvider = {
+  getToken(forceRefresh?: boolean): Promise<string | null>;
+};
+
 class GraphClient {
-  private authManager: AuthManager;
+  private authManager: TokenProvider;
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
 
-  constructor(authManager: AuthManager) {
+  constructor(authManager: TokenProvider) {
     this.authManager = authManager;
   }
 

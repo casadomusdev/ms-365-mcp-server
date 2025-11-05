@@ -8,7 +8,7 @@ import logger, { enableConsoleLogging } from './logger.js';
 import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools } from './graph-tools.js';
 import GraphClient from './graph-client.js';
-import AuthManager, { buildScopesFromEndpoints } from './auth.js';
+import { buildScopesFromEndpoints } from './auth.js';
 import { MicrosoftOAuthProvider } from './oauth-provider.js';
 import {
   exchangeCodeForToken,
@@ -31,13 +31,18 @@ interface RegisteredClient {
 
 const registeredClients = new Map<string, RegisteredClient>();
 
+type AuthLike = {
+  getToken(forceRefresh?: boolean): Promise<string | null>;
+  setOAuthToken(token: string): Promise<void>;
+};
+
 class MicrosoftGraphServer {
-  private authManager: AuthManager;
+  private authManager: AuthLike;
   private options: CommandOptions;
   private graphClient: GraphClient;
   private server: McpServer | null;
 
-  constructor(authManager: AuthManager, options: CommandOptions = {}) {
+  constructor(authManager: AuthLike, options: CommandOptions = {}) {
     this.authManager = authManager;
     this.options = options;
     this.graphClient = new GraphClient(authManager);
@@ -50,9 +55,11 @@ class MicrosoftGraphServer {
       version,
     });
 
-    const shouldRegisterAuthTools = !this.options.http || this.options.enableAuthTools;
+    const shouldRegisterAuthTools =
+      ( !this.options.http || this.options.enableAuthTools ) && process.env.USE_LOCAL_AUTH !== 'true';
     if (shouldRegisterAuthTools) {
-      registerAuthTools(this.server, this.authManager);
+      // Tools require full AuthManager API; in non-local mode we pass the real instance
+      registerAuthTools(this.server, this.authManager as unknown as import('./auth.js').default);
     }
     registerGraphTools(
       this.server,
@@ -112,7 +119,70 @@ class MicrosoftGraphServer {
         next();
       });
 
+      // Normalize Accept header for MCP (some clients omit required values)
+      app.use('/mcp', (req, _res, next) => {
+        const accept = req.get('accept') || '';
+        const needsJson = !accept.includes('application/json');
+        const needsSse = !accept.includes('text/event-stream');
+        if (needsJson || needsSse) {
+          // Ensure both are present as per MCP Streamable HTTP spec
+          const normalized = [
+            accept,
+            needsJson ? 'application/json' : undefined,
+            needsSse ? 'text/event-stream' : undefined,
+          ]
+            .filter(Boolean)
+            .join(', ');
+          (req.headers as any).accept = normalized;
+        }
+        next();
+      });
+
+      // Log all incoming MCP requests (useful for debugging OpenWebUI connections)
+      app.use('/mcp', (req, _res, next) => {
+        let jsonrpcMethod: string | undefined;
+        let jsonrpcId: unknown;
+        try {
+          if (req.method === 'POST' && req.body && typeof req.body === 'object') {
+            jsonrpcMethod = (req.body as any).method;
+            jsonrpcId = (req.body as any).id;
+          }
+        } catch {}
+
+        logger.info('Incoming MCP request', {
+          method: req.method,
+          path: req.originalUrl,
+          ip: req.ip,
+          userAgent: req.get('user-agent') || 'unknown',
+          mcpProtocolVersion: req.get('mcp-protocol-version') || 'not-set',
+          jsonrpcMethod: jsonrpcMethod || 'unknown',
+          jsonrpcId: jsonrpcId ?? 'unknown',
+        });
+        next();
+      });
+
+      // Timing for MCP responses
+      app.use('/mcp', (req, res, next) => {
+        const start = Date.now();
+        res.on('finish', () => {
+          const durationMs = Date.now() - start;
+          logger.info('MCP response sent', {
+            method: req.method,
+            path: req.originalUrl,
+            status: res.statusCode,
+            durationMs,
+          });
+        });
+        next();
+      });
+
       const oauthProvider = new MicrosoftOAuthProvider(this.authManager);
+
+      // In local auth mode, bypass bearer token middleware for /mcp endpoints
+      const httpAuthMiddleware =
+        process.env.USE_LOCAL_AUTH === 'true'
+          ? (_req: Request, _res: Response, next: () => void) => next()
+          : microsoftBearerTokenAuthMiddleware;
 
       // OAuth Authorization Server Discovery
       app.get('/.well-known/oauth-authorization-server', async (req, res) => {
@@ -331,7 +401,7 @@ class MicrosoftGraphServer {
       // Handle both GET and POST methods as required by MCP Streamable HTTP specification
       app.get(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        httpAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -353,8 +423,11 @@ class MicrosoftGraphServer {
               transport.close();
             });
 
+            const t0 = Date.now();
+            logger.info('MCP GET handling start');
             await this.server!.connect(transport);
             await transport.handleRequest(req as any, res as any, undefined);
+            logger.info('MCP GET handling complete', { durationMs: Date.now() - t0 });
           } catch (error) {
             logger.error('Error handling MCP GET request:', error);
             if (!res.headersSent) {
@@ -373,7 +446,7 @@ class MicrosoftGraphServer {
 
       app.post(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        httpAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -395,8 +468,11 @@ class MicrosoftGraphServer {
               transport.close();
             });
 
+            const t0 = Date.now();
+            logger.info('MCP POST handling start');
             await this.server!.connect(transport);
             await transport.handleRequest(req as any, res as any, req.body);
+            logger.info('MCP POST handling complete', { durationMs: Date.now() - t0 });
           } catch (error) {
             logger.error('Error handling MCP POST request:', error);
             if (!res.headersSent) {

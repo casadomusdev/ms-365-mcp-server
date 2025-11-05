@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { parseArgs } from './cli.js';
 import logger from './logger.js';
 import AuthManager, { buildScopesFromEndpoints } from './auth.js';
+import LocalAuthManager from './local-auth.js';
 import MicrosoftGraphServer from './server.js';
 import { version } from './version.js';
 
@@ -17,10 +18,19 @@ async function main(): Promise<void> {
     }
 
     const scopes = buildScopesFromEndpoints(includeWorkScopes);
-    const authManager = new AuthManager(undefined, scopes);
+    const useLocalAuth = process.env.USE_LOCAL_AUTH === 'true';
+    const authManager = useLocalAuth
+      ? new LocalAuthManager(scopes)
+      : new AuthManager(undefined, scopes);
     await authManager.loadTokenCache();
 
     if (args.login) {
+      if (useLocalAuth) {
+        console.log(
+          JSON.stringify({ error: 'login not supported when USE_LOCAL_AUTH is true' })
+        );
+        process.exit(1);
+      }
       await authManager.acquireTokenByDeviceCode();
       logger.info('Login completed, testing connection with Graph API...');
       const result = await authManager.testLogin();
@@ -36,12 +46,24 @@ async function main(): Promise<void> {
     }
 
     if (args.logout) {
+      if (useLocalAuth) {
+        console.log(
+          JSON.stringify({ error: 'logout not supported when USE_LOCAL_AUTH is true' })
+        );
+        process.exit(1);
+      }
       await authManager.logout();
       console.log(JSON.stringify({ message: 'Logged out successfully' }));
       process.exit(0);
     }
 
     if (args.listAccounts) {
+      if (useLocalAuth) {
+        console.log(
+          JSON.stringify({ error: 'listAccounts not supported when USE_LOCAL_AUTH is true' })
+        );
+        process.exit(1);
+      }
       const accounts = await authManager.listAccounts();
       const selectedAccountId = authManager.getSelectedAccountId();
       const result = accounts.map((account) => ({
@@ -55,6 +77,12 @@ async function main(): Promise<void> {
     }
 
     if (args.selectAccount) {
+      if (useLocalAuth) {
+        console.log(
+          JSON.stringify({ error: 'selectAccount not supported when USE_LOCAL_AUTH is true' })
+        );
+        process.exit(1);
+      }
       const success = await authManager.selectAccount(args.selectAccount);
       if (success) {
         console.log(JSON.stringify({ message: `Selected account: ${args.selectAccount}` }));
@@ -66,6 +94,12 @@ async function main(): Promise<void> {
     }
 
     if (args.removeAccount) {
+      if (useLocalAuth) {
+        console.log(
+          JSON.stringify({ error: 'removeAccount not supported when USE_LOCAL_AUTH is true' })
+        );
+        process.exit(1);
+      }
       const success = await authManager.removeAccount(args.removeAccount);
       if (success) {
         console.log(JSON.stringify({ message: `Removed account: ${args.removeAccount}` }));

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,24 @@ export function registerGraphTools(
   enabledToolsPattern?: string,
   orgMode: boolean = false
 ): void {
+  const createSafeToolName = (raw: string): string => {
+    // Sanitize to allowed chars (letters, numbers, underscore, dash), lowercased
+    const sanitized = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^-+/, '')
+      .replace(/_+$/g, '');
+
+    // Leave headroom for clients that prepend prefixes; cap at 48
+    const MAX = 48;
+    if (sanitized.length <= MAX) return sanitized;
+
+    const hash = crypto.createHash('md5').update(sanitized).digest('hex').slice(0, 8);
+    const baseMax = MAX - 1 - hash.length; // room for '-' + hash
+    const base = sanitized.slice(0, Math.max(0, baseMax));
+    return `${base}-${hash}`;
+  };
   let enabledToolsRegex: RegExp | undefined;
   if (enabledToolsPattern) {
     try {
@@ -137,16 +156,22 @@ export function registerGraphTools(
       .describe('Exclude the full response body and only return success or failure indication')
       .optional();
 
+    const safeName = createSafeToolName(tool.alias);
+    const safeTitle = createSafeToolName(tool.alias);
+    if (tool.alias !== safeName) {
+      logger.warn(`Tool alias exceeds 64 chars, renaming`, { alias: tool.alias, safeName });
+    }
+
     server.tool(
-      tool.alias,
-      tool.description || `Execute ${tool.method.toUpperCase()} request to ${tool.path}`,
-      paramSchema,
+      safeName,
+      tool.description || `Execute ${tool.method.toUpperCase()} request to ${tool.path} (${tool.alias})`,
+      paramSchema as any,
       {
-        title: tool.alias,
+        title: safeTitle,
         readOnlyHint: tool.method.toUpperCase() === 'GET',
       },
-      async (params) => {
-        logger.info(`Tool ${tool.alias} called with params: ${JSON.stringify(params)}`);
+      async (params: any) => {
+        logger.info(`Tool ${safeName} called with params: ${JSON.stringify(params)}`);
         try {
           logger.info(`params: ${JSON.stringify(params)}`);
 
@@ -249,6 +274,7 @@ export function registerGraphTools(
             rawResponse?: boolean;
             includeHeaders?: boolean;
             excludeResponse?: boolean;
+            [key: string]: unknown;
           } = {
             method: tool.method.toUpperCase(),
             headers,

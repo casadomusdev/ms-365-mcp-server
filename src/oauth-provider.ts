@@ -1,12 +1,15 @@
 import { ProxyOAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/providers/proxyProvider.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import logger from './logger.js';
-import AuthManager from './auth.js';
+
+type OAuthTokenAcceptor = {
+  setOAuthToken(token: string): Promise<void>;
+};
 
 export class MicrosoftOAuthProvider extends ProxyOAuthServerProvider {
-  private authManager: AuthManager;
+  private authManager: OAuthTokenAcceptor;
 
-  constructor(authManager: AuthManager) {
+  constructor(authManager: OAuthTokenAcceptor) {
     const tenantId = process.env.MS365_MCP_TENANT_ID || 'common';
     const clientId = process.env.MS365_MCP_CLIENT_ID || '084a3e9f-a9f4-43f7-89f9-d229cf97853e';
 
