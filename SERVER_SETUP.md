@@ -82,12 +82,14 @@ The server runs in **Docker** using **STDIO mode** which:
    
    **Mail (Shared Mailboxes):**
    - `Mail.Read.Shared` - Read shared mailboxes
+   - `Mail.ReadWrite.Shared` - Read and write shared mailboxes
    - `Mail.Send.Shared` - Send from shared mailboxes
    
    **Calendar:**
    - `Calendars.Read` - Read calendars
    - `Calendars.ReadWrite` - Read and write calendars
    - `Calendars.Read.Shared` - Read shared calendars (for meeting scheduling)
+   - `Calendars.ReadWrite.Shared` - Read and write shared calendars (for meeting scheduling)
    
    **Files & OneDrive:**
    - `Files.Read` - Read files
