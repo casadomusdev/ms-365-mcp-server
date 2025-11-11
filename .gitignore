@@ -141,7 +141,9 @@ dist
 .token-cache.json
 .selected-account.json
 
-# Token backup directories (from auth-export-tokens.sh)
+# Token backup archives and directories (from auth-export-tokens.sh)
+tokens-*.tar.gz
+tokens-*.tgz
 tokens-backup/
 tokens-*/
 *.tar.gz.gpg
