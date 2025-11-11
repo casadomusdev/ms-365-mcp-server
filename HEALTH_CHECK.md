@@ -90,7 +90,33 @@ Error details:
 [Error message details here]
 ```
 
+## Authentication Setup
+
+Before running the health check, you need to authenticate with Microsoft 365. Use the authentication helper scripts:
+
+```bash
+# Initial authentication (one-time setup)
+./auth-login.sh
+
+# Verify authentication worked
+./auth-verify.sh
+```
+
+See [AUTH.md](AUTH.md) for complete authentication management documentation.
+
 ## Troubleshooting
+
+### "Authentication failed"
+
+The health check requires valid authentication. If you see authentication errors:
+
+```bash
+# Verify authentication status
+./auth-verify.sh
+
+# If not authenticated, run the login script
+./auth-login.sh
+```
 
 ### "command not found: jq"
 
