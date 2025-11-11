@@ -27,9 +27,10 @@ const endpoints = {
 const SERVICE_NAME = 'ms-365-mcp-server';
 const TOKEN_CACHE_ACCOUNT = 'msal-token-cache';
 const SELECTED_ACCOUNT_KEY = 'selected-account';
-const FALLBACK_DIR = path.dirname(fileURLToPath(import.meta.url));
-const FALLBACK_PATH = path.join(FALLBACK_DIR, '..', '.token-cache.json');
-const SELECTED_ACCOUNT_PATH = path.join(FALLBACK_DIR, '..', '.selected-account.json');
+// Use TOKEN_CACHE_DIR env var if set (e.g., /app/data in Docker), otherwise use project root for backward compatibility
+const FALLBACK_DIR = process.env.TOKEN_CACHE_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FALLBACK_PATH = path.join(FALLBACK_DIR, '.token-cache.json');
+const SELECTED_ACCOUNT_PATH = path.join(FALLBACK_DIR, '.selected-account.json');
 
 const DEFAULT_CONFIG: Configuration = {
   auth: {

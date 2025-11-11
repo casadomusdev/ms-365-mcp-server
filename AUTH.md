@@ -437,6 +437,174 @@ docker compose exec ms365-mcp /app/health-check.sh
 
 ---
 
+---
+
+## Token Transfer Between Machines
+
+You can export authentication tokens from one machine and import them to another. This is useful for:
+- Transferring authentication to production servers
+- Backing up tokens
+- Setting up multiple environments with the same credentials
+- Avoiding repeated device code authentication
+
+### Quick Token Transfer
+
+```bash
+# On source machine (Machine A)
+./auth-export-tokens.sh
+
+# Transfer the tokens-backup directory to Machine B
+# (Use scp, encrypted USB, etc.)
+
+# On destination machine (Machine B)
+./auth-import-tokens.sh ./tokens-backup
+```
+
+### Detailed Token Export Process
+
+**On the source machine:**
+
+```bash
+# Export tokens to default directory (./tokens-backup)
+./auth-export-tokens.sh
+
+# Or specify a custom directory
+./auth-export-tokens.sh ./my-tokens
+
+# The export includes:
+# - .token-cache.json (MSAL token cache with access/refresh tokens)
+# - .selected-account.json (currently selected account)
+# - .export-timestamp (timestamp for reference)
+```
+
+### Securing Exported Tokens
+
+**IMPORTANT**: Token files contain sensitive authentication data!
+
+```bash
+# Encrypt the tokens
+cd tokens-backup/..
+tar czf - tokens-backup | gpg -c > tokens-$(date +%Y%m%d).tar.gz.gpg
+
+# Delete unencrypted files
+rm -rf tokens-backup
+
+# Transfer encrypted file securely
+scp tokens-*.tar.gz.gpg user@server:/path/to/
+```
+
+### Detailed Token Import Process
+
+**On the destination machine:**
+
+```bash
+# If tokens are encrypted, decrypt first
+gpg -d tokens-20241111.tar.gz.gpg | tar xzf -
+
+# Import tokens
+./auth-import-tokens.sh ./tokens-backup
+
+# Verify authentication works
+./auth-verify.sh
+
+# Clean up backup files (optional)
+rm -rf tokens-backup
+```
+
+### Manual Token Transfer (Without Scripts)
+
+If you prefer manual control or the scripts don't work:
+
+**Export manually:**
+
+```bash
+# From source machine
+docker cp ms365-mcp-server:/app/data/.token-cache.json ./token-cache.json
+docker cp ms365-mcp-server:/app/data/.selected-account.json ./selected-account.json
+
+# Transfer files to destination machine
+scp token-cache.json selected-account.json user@dest-server:/path/to/
+```
+
+**Import manually:**
+
+```bash
+# On destination machine
+# Get container ID
+CONTAINER_ID=$(docker compose ps -q ms365-mcp)
+
+# Copy tokens in
+docker cp token-cache.json $CONTAINER_ID:/app/data/.token-cache.json
+docker cp selected-account.json $CONTAINER_ID:/app/data/.selected-account.json
+
+# Fix permissions
+docker compose exec ms365-mcp chown node:node /app/data/.token-cache.json
+docker compose exec ms365-mcp chown node:node /app/data/.selected-account.json
+
+# Verify
+./auth-verify.sh
+```
+
+### Token Storage Location
+
+**In Docker:**
+- Location: `/app/data/`
+- Volume: Named Docker volume (`ms365-mcp-token-cache`)
+- Controlled by: `TOKEN_CACHE_DIR` environment variable
+
+**Locally (non-Docker):**
+- Location: Project root directory
+- Files: `.token-cache.json`, `.selected-account.json`
+
+**Environment Variable:**
+The `TOKEN_CACHE_DIR` environment variable controls where tokens are stored:
+```bash
+# Default (project root for backward compatibility)
+# Unset or empty = ./
+
+# Docker (set in docker-compose.yaml)
+TOKEN_CACHE_DIR=/app/data
+```
+
+### Token Transfer Security Considerations
+
+1. **Encrypt in transit**: Always encrypt tokens before transferring
+2. **Secure channels**: Use scp, VPN, or encrypted USB drives
+3. **Delete after transfer**: Remove unencrypted token files after successful import
+4. **Verify permissions**: Ensure token files are only readable by the application user
+5. **Audit trail**: Keep track of which machines have access to which accounts
+
+### Troubleshooting Token Transfer
+
+**"Container not found" error:**
+```bash
+# Make sure container exists
+docker compose up -d
+# Then retry import
+./auth-import-tokens.sh
+```
+
+**"Permission denied" after import:**
+```bash
+# Fix permissions manually
+docker compose exec ms365-mcp chown node:node /app/data/.token-cache.json
+docker compose exec ms365-mcp chown node:node /app/data/.selected-account.json
+```
+
+**Tokens don't work after import:**
+```bash
+# Verify token files were copied correctly
+docker compose exec ms365-mcp ls -la /app/data/
+
+# Check if tokens are expired
+./auth-verify.sh
+
+# If expired, re-authenticate
+./auth-login.sh
+```
+
+---
+
 ## See Also
 
 - [HEALTH_CHECK.md](HEALTH_CHECK.md) - Health check script documentation
