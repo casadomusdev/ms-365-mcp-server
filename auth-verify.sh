@@ -33,30 +33,26 @@ else
     OUTPUT=$(node dist/index.js --verify-login 2>&1)
 fi
 
-# Process the output
-if [ $? -eq 0 ]; then
-    # Parse the JSON output - data is nested under .userData
-    if echo "$OUTPUT" | jq -e '.userData.displayName' > /dev/null 2>&1; then
-        DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName')
-        USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userData.userPrincipalName // .userData.mail // "N/A"')
-        
-        echo -e "${GREEN}✓ Authentication verified${NC}"
-        echo ""
-        echo "Authenticated as:"
-        echo "  Name:  $DISPLAY_NAME"
-        echo "  Email: $USER_EMAIL"
-        echo ""
-        exit 0
-    else
-        echo -e "${RED}✗ Authentication failed - invalid response${NC}"
-        echo ""
-        echo "Response: $OUTPUT"
-        exit 1
-    fi
+# Check if command succeeded and parse output
+if echo "$OUTPUT" | jq -e '.success' > /dev/null 2>&1 && \
+   [ "$(echo "$OUTPUT" | jq -r '.success')" = "true" ]; then
+    
+    # Extract user data
+    DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName // "N/A"')
+    USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userData.userPrincipalName // .userData.mail // "N/A"')
+    
+    echo -e "${GREEN}✓ Authentication verified${NC}"
+    echo ""
+    echo "Authenticated as:"
+    echo "  Name:  $DISPLAY_NAME"
+    echo "  Email: $USER_EMAIL"
+    echo ""
+    exit 0
 else
     echo -e "${RED}✗ Authentication failed${NC}"
     echo ""
     echo "You need to run ./auth-login.sh first to authenticate."
     echo ""
+    echo "Debug output: $OUTPUT"
     exit 1
 fi
