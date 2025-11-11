@@ -23,11 +23,12 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# Install dumb-init and runtime dependencies for keytar
+# Install dumb-init and runtime dependencies for keytar and health checks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     dumb-init \
-    libsecret-1-0 && \
+    libsecret-1-0 \
+    jq && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy package files
