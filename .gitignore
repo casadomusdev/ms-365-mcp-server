@@ -141,6 +141,11 @@ dist
 .token-cache.json
 .selected-account.json
 
+# Token backup directories (from auth-export-tokens.sh)
+tokens-backup/
+tokens-*/
+*.tar.gz.gpg
+
 # Docker volume data directory
 data/
 
