@@ -28,10 +28,13 @@ set -e
 
 # Parse arguments
 FORCE_FILE_CACHE=false
+INTERACTIVE=true
+
 for arg in "$@"; do
     case $arg in
         --force-file-cache)
             FORCE_FILE_CACHE=true
+            INTERACTIVE=false
             shift
             ;;
         *)
@@ -41,6 +44,31 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# If no arguments provided, ask user interactively
+if [ "$INTERACTIVE" = true ]; then
+    echo "Token Storage Options:"
+    echo "  1. System Keychain (default, secure)"
+    echo "  2. File-based cache (allows token export for server transfer)"
+    echo ""
+    read -p "Choose storage method (1 or 2) [1]: " choice
+    choice=${choice:-1}
+    
+    if [ "$choice" = "2" ]; then
+        FORCE_FILE_CACHE=true
+        echo ""
+        echo "✓ File-based cache selected"
+        echo "  You'll be able to export tokens with ./auth-export-tokens.sh"
+        echo ""
+    elif [ "$choice" = "1" ]; then
+        echo ""
+        echo "✓ System keychain selected (default)"
+        echo ""
+    else
+        echo "Invalid choice. Using default (system keychain)."
+        echo ""
+    fi
+fi
 
 # Color codes
 GREEN='\033[0;32m'
