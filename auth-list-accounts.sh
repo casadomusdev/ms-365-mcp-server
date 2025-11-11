@@ -3,7 +3,7 @@
 # MS-365 MCP Server - List Accounts Script
 #
 # Lists all authenticated accounts cached in the token store.
-# Useful for multi-account setups to see which accounts are available.
+# Supports dual-mode operation: Docker or local Node.js
 #
 # Usage:
 #   ./auth-list-accounts.sh
@@ -14,18 +14,25 @@
 
 set -e
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# Get script directory and source shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.scripts-lib.sh"
 
 echo -e "${YELLOW}MS-365 MCP Server - List Accounts${NC}"
 echo "===================================="
 echo ""
 
-# Run the list-accounts command
-if OUTPUT=$(docker compose run --rm ms365-mcp node dist/index.js --list-accounts 2>&1); then
+# Detect execution mode and run appropriately
+detect_execution_mode
+
+if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
+    OUTPUT=$(docker compose run --rm ms365-mcp node dist/index.js --list-accounts 2>&1)
+else
+    OUTPUT=$(node dist/index.js --list-accounts 2>&1)
+fi
+
+# Process the output
+if [ $? -eq 0 ]; then
     # Parse the JSON output
     if echo "$OUTPUT" | jq -e '.accounts' > /dev/null 2>&1; then
         ACCOUNT_COUNT=$(echo "$OUTPUT" | jq -r '.accounts | length')

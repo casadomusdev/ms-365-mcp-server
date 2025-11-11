@@ -2,102 +2,156 @@
 #
 # MS-365 MCP Server - Import Tokens Script
 #
-# Imports authentication tokens from local files into the Docker container.
-# This allows you to transfer tokens from another machine or restore from backup.
+# Imports authentication tokens from a compressed archive.
+# Supports dual-mode operation: Docker or local Node.js
 #
 # Usage:
-#   ./auth-import-tokens.sh [input-directory]
+#   ./auth-import-tokens.sh <archive-file>
 #
 # Arguments:
-#   input-directory  Optional. Directory containing tokens (default: ./tokens-backup)
+#   archive-file  Path to tokens-*.tar.gz file to import
 #
 # Exit codes:
 #   0 - Import successful
 #   1 - Import failed
+#   2 - Invalid archive file
 
 set -e
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+# Get script directory and source shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.scripts-lib.sh"
 
-# Default input directory
-INPUT_DIR="${1:-./tokens-backup}"
-
-echo -e "${YELLOW}MS-365 MCP Server - Import Tokens${NC}"
-echo "====================================="
+echo -e "${CYAN}MS-365 MCP Server - Import Tokens${NC}"
+echo "===================================="
 echo ""
 
-# Check if input directory exists
-if [ ! -d "$INPUT_DIR" ]; then
-    echo -e "${RED}✗ Input directory not found: $INPUT_DIR${NC}"
+# Check if archive file was provided
+if [ -z "$1" ]; then
+    echo -e "${RED}✗ No archive file specified${NC}"
     echo ""
-    echo "Usage: ./auth-import-tokens.sh [input-directory]"
+    echo "Usage: ./auth-import-tokens.sh <archive-file>"
     echo ""
+    echo "Example:"
+    echo "  ./auth-import-tokens.sh tokens-20231201-143022.tar.gz"
+    echo ""
+    exit 2
+fi
+
+ARCHIVE_FILE="$1"
+
+# Check if archive file exists
+if [ ! -f "$ARCHIVE_FILE" ]; then
+    echo -e "${RED}✗ Archive file not found: $ARCHIVE_FILE${NC}"
+    echo ""
+    exit 2
+fi
+
+# Check file extension
+if [[ ! "$ARCHIVE_FILE" =~ \.tar\.gz$ ]]; then
+    echo -e "${YELLOW}⚠  Warning: File doesn't have .tar.gz extension${NC}"
+    echo "  Attempting to extract anyway..."
+    echo ""
+fi
+
+echo "Importing tokens from archive..."
+echo "  Archive: $ARCHIVE_FILE"
+echo ""
+
+# Create temporary directory for extraction
+EXTRACT_DIR=$(mktemp -d)
+
+# Extract archive
+echo "Extracting archive..."
+if tar -xzf "$ARCHIVE_FILE" -C "$EXTRACT_DIR" 2>/dev/null; then
+    echo -e "${GREEN}✓ Archive extracted${NC}"
+else
+    echo -e "${RED}✗ Failed to extract archive${NC}"
+    echo ""
+    echo "The file may be corrupted or not a valid tar.gz archive."
+    rm -rf "$EXTRACT_DIR"
     exit 1
 fi
 
-# Check if token files exist
-if [ ! -f "$INPUT_DIR/.token-cache.json" ]; then
-    echo -e "${RED}✗ Token cache file not found: $INPUT_DIR/.token-cache.json${NC}"
+# Verify token file exists in archive
+TOKEN_FILE="$EXTRACT_DIR/tokens/.token-cache.json"
+if [ ! -f "$TOKEN_FILE" ]; then
+    echo -e "${RED}✗ No token file found in archive${NC}"
     echo ""
-    echo "This directory doesn't appear to contain exported tokens."
-    echo "Run ./auth-export-tokens.sh first on the source machine."
+    echo "The archive doesn't contain a valid token file."
+    rm -rf "$EXTRACT_DIR"
+    exit 2
+fi
+
+# Show export info if available
+INFO_FILE="$EXTRACT_DIR/tokens/export-info.txt"
+if [ -f "$INFO_FILE" ]; then
+    echo ""
+    echo "Archive Information:"
+    echo "──────────────────────────────────────"
+    cat "$INFO_FILE"
+    echo "──────────────────────────────────────"
+    echo ""
+fi
+
+# Detect execution mode
+detect_execution_mode
+
+# Import tokens based on mode
+if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
+    echo "Importing to Docker volume..."
+    
+    # Ensure container data directory exists
+    docker compose exec ms365-mcp mkdir -p /app/data 2>/dev/null || true
+    
+    # Copy token file to container
+    if docker compose cp "$TOKEN_FILE" ms365-mcp:/app/data/.token-cache.json 2>/dev/null; then
+        IMPORT_LOCATION="docker-volume"
+        IMPORT_SUCCESS=true
+    else
+        echo -e "${RED}✗ Failed to copy tokens to container${NC}"
+        IMPORT_SUCCESS=false
+    fi
+else
+    echo "Importing to local directory..."
+    
+    # Determine local token location
+    if [ -d /app/data ]; then
+        # Inside container
+        TARGET_DIR="/app/data"
+    else
+        # Local machine
+        TARGET_DIR="$SCRIPT_DIR"
+    fi
+    
+    # Copy token file
+    if cp "$TOKEN_FILE" "$TARGET_DIR/.token-cache.json"; then
+        IMPORT_LOCATION="local ($TARGET_DIR)"
+        IMPORT_SUCCESS=true
+    else
+        echo -e "${RED}✗ Failed to copy tokens${NC}"
+        IMPORT_SUCCESS=false
+    fi
+fi
+
+# Cleanup
+rm -rf "$EXTRACT_DIR"
+
+# Report result
+if [ "$IMPORT_SUCCESS" = true ]; then
+    echo -e "${GREEN}✓ Tokens imported successfully${NC}"
+    echo ""
+    echo "Import Details:"
+    echo "  Location: $IMPORT_LOCATION"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Verify authentication: ./auth-verify.sh"
+    echo "  2. Start the server: ./start.sh"
+    echo ""
+    exit 0
+else
+    echo ""
+    echo "Import failed. Please check the error messages above."
     echo ""
     exit 1
-fi
-
-echo "Importing tokens from: $INPUT_DIR"
-echo ""
-
-# Check if container exists and create it if needed
-if ! docker compose ps | grep -q ms365-mcp; then
-    echo "Container not running. Creating it..."
-    docker compose up -d
-    echo "Waiting for container to be ready..."
-    sleep 2
-fi
-
-# Use docker cp to copy files into the volume
-CONTAINER_NAME=$(docker compose ps -q ms365-mcp)
-
-if [ -z "$CONTAINER_NAME" ]; then
-    echo -e "${RED}✗ Failed to get container name${NC}"
-    exit 1
-fi
-
-echo "Copying .token-cache.json..."
-docker cp "$INPUT_DIR/.token-cache.json" "$CONTAINER_NAME:/app/data/.token-cache.json"
-echo -e "${GREEN}✓${NC} Imported .token-cache.json"
-
-if [ -f "$INPUT_DIR/.selected-account.json" ]; then
-    echo "Copying .selected-account.json..."
-    docker cp "$INPUT_DIR/.selected-account.json" "$CONTAINER_NAME:/app/data/.selected-account.json"
-    echo -e "${GREEN}✓${NC} Imported .selected-account.json"
-fi
-
-# Fix permissions
-echo "Setting correct permissions..."
-docker compose exec -T ms365-mcp chown node:node /app/data/.token-cache.json
-if [ -f "$INPUT_DIR/.selected-account.json" ]; then
-    docker compose exec -T ms365-mcp chown node:node /app/data/.selected-account.json
-fi
-
-echo ""
-echo -e "${GREEN}✓ Import completed successfully${NC}"
-echo ""
-echo "Tokens have been imported. Verify with:"
-echo "  ./auth-verify.sh"
-echo ""
-echo "Or check inside the container:"
-echo "  docker compose exec ms365-mcp /app/health-check.sh"
-echo ""
-
-# Optionally show export timestamp if available
-if [ -f "$INPUT_DIR/.export-timestamp" ]; then
-    EXPORT_TIME=$(cat "$INPUT_DIR/.export-timestamp")
-    echo "Note: These tokens were exported at: $EXPORT_TIME"
-    echo ""
 fi

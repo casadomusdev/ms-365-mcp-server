@@ -3,7 +3,7 @@
 # MS-365 MCP Server - Logout Script
 #
 # Logs out and clears all cached credentials from the token cache.
-# Use this to remove authentication completely.
+# Supports dual-mode operation: Docker or local Node.js
 #
 # Usage:
 #   ./auth-logout.sh
@@ -14,11 +14,9 @@
 
 set -e
 
-# Color codes
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Get script directory and source shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.scripts-lib.sh"
 
 echo -e "${YELLOW}MS-365 MCP Server - Logout${NC}"
 echo "============================"
@@ -37,8 +35,19 @@ fi
 echo ""
 echo "Logging out..."
 
-# Run the logout command
-if docker compose run --rm ms365-mcp node dist/index.js --logout; then
+# Detect execution mode and run appropriately
+detect_execution_mode
+
+if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
+    # Use docker compose run for one-off logout
+    LOGOUT_SUCCESS=$(docker compose run --rm ms365-mcp node dist/index.js --logout && echo "true" || echo "false")
+else
+    # Run directly
+    LOGOUT_SUCCESS=$(node dist/index.js --logout && echo "true" || echo "false")
+fi
+
+# Check result
+if [ "$LOGOUT_SUCCESS" = "true" ]; then
     echo ""
     echo -e "${GREEN}✓ Logged out successfully${NC}"
     echo ""

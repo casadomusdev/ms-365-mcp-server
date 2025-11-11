@@ -2,95 +2,139 @@
 #
 # MS-365 MCP Server - Export Tokens Script
 #
-# Exports authentication tokens from the Docker container to local files.
-# This allows you to transfer tokens to another machine or create backups.
+# Exports authentication tokens to a timestamped compressed archive.
+# Supports dual-mode operation: Docker or local Node.js
 #
 # Usage:
-#   ./auth-export-tokens.sh [output-directory]
+#   ./auth-export-tokens.sh [output-file]
 #
 # Arguments:
-#   output-directory  Optional. Directory to save tokens (default: ./tokens-backup)
+#   output-file  Optional: Custom output filename (default: tokens-YYYYMMDD-HHMMSS.tar.gz)
 #
 # Exit codes:
 #   0 - Export successful
 #   1 - Export failed
+#   2 - No tokens found to export
 
 set -e
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+# Get script directory and source shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.scripts-lib.sh"
 
-# Default output directory
-OUTPUT_DIR="${1:-./tokens-backup}"
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-echo -e "${YELLOW}MS-365 MCP Server - Export Tokens${NC}"
-echo "====================================="
+echo -e "${CYAN}MS-365 MCP Server - Export Tokens${NC}"
+echo "===================================="
 echo ""
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
+# Detect execution mode
+detect_execution_mode
 
-echo "Exporting tokens from Docker container..."
-echo "Output directory: $OUTPUT_DIR"
-echo ""
-
-# Check if container exists
-if ! docker compose ps | grep -q ms365-mcp; then
-    echo -e "${RED}✗ Container 'ms365-mcp' not found${NC}"
-    echo ""
-    echo "Make sure the container has been created with:"
-    echo "  docker compose up -d"
-    echo ""
-    exit 1
-fi
-
-# Export token files from Docker volume
-echo "Copying .token-cache.json..."
-if docker compose exec -T ms365-mcp cat /app/data/.token-cache.json > "$OUTPUT_DIR/.token-cache.json" 2>/dev/null; then
-    echo -e "${GREEN}✓${NC} Exported .token-cache.json"
+# Determine token file location based on mode
+if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
+    # Docker mode - tokens are in container volume
+    TOKEN_LOCATION="docker-volume"
+    TEMP_DIR=$(mktemp -d)
+    
+    # Copy token file from container to temp location
+    echo "Checking for tokens in Docker volume..."
+    if docker compose exec ms365-mcp test -f /app/data/.token-cache.json 2>/dev/null; then
+        docker compose cp ms365-mcp:/app/data/.token-cache.json "$TEMP_DIR/.token-cache.json" 2>/dev/null || true
+    fi
+    
+    TOKEN_FILE="$TEMP_DIR/.token-cache.json"
 else
-    echo -e "${YELLOW}⚠${NC} .token-cache.json not found (container may not be authenticated yet)"
+    # Direct mode - tokens are in local directory
+    TOKEN_LOCATION="local"
+    if [ -f .token-cache.json ]; then
+        TOKEN_FILE=".token-cache.json"
+    elif [ -f /app/data/.token-cache.json ]; then
+        TOKEN_FILE="/app/data/.token-cache.json"
+    else
+        TOKEN_FILE=".token-cache.json"
+    fi
 fi
 
-echo "Copying .selected-account.json..."
-if docker compose exec -T ms365-mcp cat /app/data/.selected-account.json > "$OUTPUT_DIR/.selected-account.json" 2>/dev/null; then
-    echo -e "${GREEN}✓${NC} Exported .selected-account.json"
+# Check if tokens exist
+if [ ! -f "$TOKEN_FILE" ]; then
+    echo -e "${RED}✗ No authentication tokens found${NC}"
+    echo ""
+    echo "You need to authenticate first:"
+    echo "  ./auth-login.sh --force-file-cache"
+    echo ""
+    echo "Note: Token export only works with file-based cache."
+    echo "      System keychain tokens cannot be exported."
+    echo ""
+    
+    # Cleanup temp dir if created
+    [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+    
+    exit 2
+fi
+
+# Generate output filename with timestamp
+TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+if [ -n "$1" ]; then
+    OUTPUT_FILE="$1"
 else
-    echo -e "${YELLOW}⚠${NC} .selected-account.json not found"
+    OUTPUT_FILE="tokens-${TIMESTAMP}.tar.gz"
 fi
 
-# Create a timestamp file for reference
-echo "$TIMESTAMP" > "$OUTPUT_DIR/.export-timestamp"
-
+echo "Exporting tokens..."
+echo "  Source: $TOKEN_LOCATION"
+echo "  Output: $OUTPUT_FILE"
 echo ""
 
-# Check if any files were actually exported
-if [ -f "$OUTPUT_DIR/.token-cache.json" ]; then
-    echo -e "${GREEN}✓ Export completed successfully${NC}"
+# Create temporary directory for archive contents
+ARCHIVE_DIR=$(mktemp -d)
+mkdir -p "$ARCHIVE_DIR/tokens"
+
+# Copy token file
+cp "$TOKEN_FILE" "$ARCHIVE_DIR/tokens/.token-cache.json"
+
+# Create metadata file
+cat > "$ARCHIVE_DIR/tokens/export-info.txt" << EOF
+MS-365 MCP Server Token Export
+===============================
+
+Export Date: $(date '+%Y-%m-%d %H:%M:%S %Z')
+Hostname: $(hostname)
+Export Mode: $TOKEN_LOCATION
+
+Important:
+- Keep this file secure and encrypted
+- Tokens provide access to your Microsoft 365 account
+- Import on target machine with: ./auth-import-tokens.sh $OUTPUT_FILE
+EOF
+
+# Create compressed archive
+cd "$ARCHIVE_DIR"
+tar -czf "$SCRIPT_DIR/$OUTPUT_FILE" tokens/
+
+# Cleanup
+cd "$SCRIPT_DIR"
+rm -rf "$ARCHIVE_DIR"
+[ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+
+# Verify archive was created
+if [ -f "$OUTPUT_FILE" ]; then
+    FILE_SIZE=$(du -h "$OUTPUT_FILE" | cut -f1)
+    echo -e "${GREEN}✓ Tokens exported successfully${NC}"
     echo ""
-    echo "Token files saved to: $OUTPUT_DIR"
+    echo "Archive Details:"
+    echo "  File: $OUTPUT_FILE"
+    echo "  Size: $FILE_SIZE"
     echo ""
-    echo "⚠️  SECURITY WARNING:"
-    echo "These files contain sensitive authentication tokens!"
-    echo ""
-    echo "To secure the tokens:"
-    echo "  1. Encrypt: tar czf - \"$OUTPUT_DIR\" | gpg -c > tokens-$TIMESTAMP.tar.gz.gpg"
-    echo "  2. Transfer securely (scp, encrypted USB, etc.)"
-    echo "  3. Delete unencrypted files: rm -rf \"$OUTPUT_DIR\""
+    echo -e "${YELLOW}⚠  SECURITY WARNING:${NC}"
+    echo "  This file contains sensitive authentication tokens."
+    echo "  Store it securely and transport it safely."
     echo ""
     echo "To import on another machine:"
-    echo "  ./auth-import-tokens.sh $OUTPUT_DIR"
+    echo "  1. Transfer the file securely (scp, encrypted transfer, etc.)"
+    echo "  2. Run: ./auth-import-tokens.sh $OUTPUT_FILE"
     echo ""
     exit 0
 else
-    echo -e "${RED}✗ Export failed - no token files found${NC}"
-    echo ""
-    echo "This usually means authentication has not been performed yet."
-    echo "Run ./auth-login.sh first to authenticate."
+    echo -e "${RED}✗ Failed to create archive${NC}"
     echo ""
     exit 1
 fi
