@@ -7,9 +7,32 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import { getToolDescription } from './tool-descriptions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+function sanitizeAqsSearch(value: string): string {
+  // AQS treats '-' as operator; unquoted tokens like CE-I6 error. Strategy:
+  // - If it already looks like an advanced query (contains ':', boolean ops, parentheses, or quotes), leave as-is
+  // - Else, if it contains any non-alphanumeric, wrap the whole term in double quotes
+  // - Escape any embedded double quotes
+  const raw = String(value ?? '').trim();
+  if (raw.length === 0) return raw;
+
+  const hasAdvancedSyntax = /[\(\)]/.test(raw) || /\bAND\b|\bOR\b|\bNOT\b/i.test(raw) || raw.includes(':') || raw.includes('"');
+  if (hasAdvancedSyntax) {
+    return raw;
+  }
+
+  const needsQuoting = /[^A-Za-z0-9]/.test(raw);
+  if (!needsQuoting) {
+    return raw;
+  }
+
+  const escaped = raw.replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
 
 interface EndpointConfig {
   pathPattern: string;
@@ -85,6 +108,93 @@ export function registerGraphTools(
   enabledToolsPattern?: string,
   orgMode: boolean = false
 ): void {
+  const parseBool = (val: string | undefined, dflt = true): boolean => {
+    if (val == null) return dflt;
+    const v = val.toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  };
+
+  // Feature toggles (default true)
+  // Disabled by default; opt-in via env
+  const enableMail = parseBool(process.env.MS365_MCP_ENABLE_MAIL, false);
+  const enableCalendar = parseBool(process.env.MS365_MCP_ENABLE_CALENDAR, false);
+  const enableFiles = parseBool(process.env.MS365_MCP_ENABLE_FILES, false); // OneDrive + SharePoint
+  const enableTeams = parseBool(process.env.MS365_MCP_ENABLE_TEAMS, false); // Chats + Channels
+  const enableExcelPpt = parseBool(process.env.MS365_MCP_ENABLE_EXCEL_POWERPOINT, false);
+  const enableOneNote = parseBool(process.env.MS365_MCP_ENABLE_ONENOTE, false);
+  const enableTasks = parseBool(process.env.MS365_MCP_ENABLE_TASKS, false); // To Do + Planner
+  const enableContacts = parseBool(process.env.MS365_MCP_ENABLE_CONTACTS, false);
+  const enableUser = parseBool(process.env.MS365_MCP_ENABLE_USER, false);
+  const enableSearch = parseBool(process.env.MS365_MCP_ENABLE_SEARCH, false);
+
+  const getCategoryEnabled = (alias: string, path: string): boolean => {
+    const p = path.toLowerCase();
+    const a = alias.toLowerCase();
+
+    // Mail
+    if (
+      p.includes('/me/messages') ||
+      p.includes('/users/{user-id}/messages') ||
+      p.includes('/mailfolders') ||
+      p.includes('/sendmail') ||
+      p.includes('/attachments')
+    ) {
+      return enableMail;
+    }
+
+    // Calendar
+    if (
+      p.includes('/events') ||
+      p.includes('/calendarview') ||
+      p.includes('/calendars') ||
+      p.includes('/findmeetingtimes')
+    ) {
+      return enableCalendar;
+    }
+
+    // Files: OneDrive + SharePoint
+    if (p.includes('/drives') || p.startsWith('/sites')) {
+      return enableFiles;
+    }
+
+    // Excel (workbook endpoints live under /drives/.../workbook)
+    if (p.includes('/workbook/')) {
+      return enableExcelPpt;
+    }
+
+    // OneNote
+    if (p.includes('/onenote/')) {
+      return enableOneNote;
+    }
+
+    // Tasks (To Do + Planner)
+    if (p.includes('/todo/') || p.includes('/planner/')) {
+      return enableTasks;
+    }
+
+    // Teams (Chats/Channels)
+    if (p.startsWith('/chats') || p.startsWith('/teams')) {
+      return enableTeams;
+    }
+
+    // Contacts
+    if (p.includes('/contacts')) {
+      return enableContacts;
+    }
+
+    // User info (get-current-user)
+    if (p === '/me') {
+      return enableUser;
+    }
+
+    // Cross-cutting search
+    if (p === '/search/query') {
+      return enableSearch;
+    }
+
+    // Default: disabled (explicit opt-in via env for known groups only)
+    return false;
+  };
   const createSafeToolName = (raw: string): string => {
     // Sanitize to allowed chars (letters, numbers, underscore, dash), lowercased
     const sanitized = raw
@@ -94,8 +204,8 @@ export function registerGraphTools(
       .replace(/^-+/, '')
       .replace(/_+$/g, '');
 
-    // Leave headroom for clients that prepend prefixes; cap at 48
-    const MAX = 48;
+    // Leave ample headroom for clients that prepend GUID prefixes (e.g., 37 chars incl. underscore); cap at 24
+    const MAX = 24;
     if (sanitized.length <= MAX) return sanitized;
 
     const hash = crypto.createHash('md5').update(sanitized).digest('hex').slice(0, 8);
@@ -127,6 +237,12 @@ export function registerGraphTools(
 
     if (enabledToolsRegex && !enabledToolsRegex.test(tool.alias)) {
       logger.info(`Skipping tool ${tool.alias} - doesn't match filter pattern`);
+      continue;
+    }
+
+    // Feature toggle filtering
+    if (!getCategoryEnabled(tool.alias, tool.path)) {
+      logger.info(`Skipping tool ${tool.alias} - disabled by feature toggles`);
       continue;
     }
 
@@ -162,9 +278,15 @@ export function registerGraphTools(
       logger.warn(`Tool alias exceeds 64 chars, renaming`, { alias: tool.alias, safeName });
     }
 
+    const finalDescription = getToolDescription(
+      tool.alias,
+      tool.description ||
+        `Execute ${tool.method.toUpperCase()} request to ${tool.path} (${tool.alias})`
+    );
+
     server.tool(
       safeName,
-      tool.description || `Execute ${tool.method.toUpperCase()} request to ${tool.path} (${tool.alias})`,
+      finalDescription,
       paramSchema as any,
       {
         title: safeTitle,
@@ -225,7 +347,12 @@ export function registerGraphTools(
                   break;
 
                 case 'Query':
-                  queryParams[fixedParamName] = `${paramValue}`;
+                  if (fixedParamName === '$search') {
+                    const sanitized = sanitizeAqsSearch(String(paramValue ?? ''));
+                    queryParams[fixedParamName] = `${sanitized}`;
+                  } else {
+                    queryParams[fixedParamName] = `${paramValue}`;
+                  }
                   break;
 
                 case 'Body':
@@ -258,6 +385,25 @@ export function registerGraphTools(
               body = paramValue;
               logger.info(`Set body param: ${JSON.stringify(body)}`);
             }
+          }
+
+          // Sanitize search payloads for /search/query (Microsoft Search API)
+          try {
+            const isSearchQueryEndpoint = tool.path === '/search/query' || path === '/search/query';
+            if (isSearchQueryEndpoint && body && typeof body === 'object') {
+              const anyBody: any = body;
+              if (Array.isArray(anyBody.requests)) {
+                for (const req of anyBody.requests) {
+                  if (req && req.query && typeof req.query.queryString === 'string') {
+                    req.query.queryString = sanitizeAqsSearch(req.query.queryString);
+                  }
+                }
+              } else if (anyBody.query && typeof anyBody.query.queryString === 'string') {
+                anyBody.query.queryString = sanitizeAqsSearch(anyBody.query.queryString);
+              }
+            }
+          } catch (e) {
+            logger.warn(`Search query sanitization skipped due to unexpected body shape: ${e}`);
           }
 
           if (Object.keys(queryParams).length > 0) {

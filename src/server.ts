@@ -50,6 +50,10 @@ class MicrosoftGraphServer {
   }
 
   async initialize(version: string): Promise<void> {
+    // Enable console logging early so initialization logs (like tool registration) are visible
+    if (this.options.v) {
+      enableConsoleLogging();
+    }
     this.server = new McpServer({
       name: 'Microsoft365MCP',
       version,
