@@ -26,10 +26,10 @@ echo ""
 
 # Run the verify command
 if OUTPUT=$(docker compose run --rm ms365-mcp node dist/index.js --verify-login 2>&1); then
-    # Parse the JSON output
-    if echo "$OUTPUT" | jq -e '.displayName' > /dev/null 2>&1; then
-        DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.displayName')
-        USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userPrincipalName // .mail // "N/A"')
+    # Parse the JSON output - data is nested under .userData
+    if echo "$OUTPUT" | jq -e '.userData.displayName' > /dev/null 2>&1; then
+        DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName')
+        USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userData.userPrincipalName // .userData.mail // "N/A"')
         
         echo -e "${GREEN}✓ Authentication verified${NC}"
         echo ""
