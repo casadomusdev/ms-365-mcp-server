@@ -12,26 +12,32 @@ The `health-check.sh` script provides a simple way to verify that the MS-365 MCP
 
 ## Usage
 
-### Local Testing (Host Machine)
+The health check script now features **dual-mode operation** - it automatically detects whether it's running on the host or inside a Docker container and adapts accordingly.
 
-If you have the project built locally:
+### Simple Usage (Recommended)
+
+Just run the script directly from the host:
 
 ```bash
 cd projects/ms-365-mcp-server
 ./health-check.sh
 ```
 
-### Docker Container Testing
+The script will:
+- Detect it's running on the host
+- Automatically execute inside the Docker container
+- Use the correct container name from `COMPOSE_PROJECT_NAME` in `.env`
 
-To run the health check inside the Docker container:
+### Advanced Usage
+
+You can still run it directly inside the container if needed:
 
 ```bash
-# Using docker-compose exec (container must be running)
-docker-compose exec ms365-mcp /app/health-check.sh
-
-# Or using docker-compose run (one-off container)
-docker-compose run --rm ms365-mcp /app/health-check.sh
+# Inside container (for monitoring systems, etc.)
+docker exec ms365-mcp-ms365-mcp-1 /app/health-check.sh
 ```
+
+The script detects its environment and runs appropriately in both cases.
 
 ### As a Docker Healthcheck
 

@@ -5,18 +5,43 @@
 # This script verifies that the MCP server is properly configured and can
 # connect to Microsoft Graph API.
 #
+# Dual-mode operation:
+#   - Detects if running inside Docker container or on host
+#   - Automatically uses correct execution method
+#
 # Usage:
-#   ./health-check.sh                    # Run health check locally
-#   docker-compose exec ms365-mcp ./health-check.sh   # Run in container
+#   ./health-check.sh                    # Auto-detects environment
 #
 # Exit codes:
 #   0 - Health check passed
 #   1 - Health check failed
-#   2 - Container not running (docker-compose only)
+#   2 - Container not running (host mode only)
 
 set -e
 
-# Color codes for output
+# Detect if running inside Docker container
+if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+    INSIDE_DOCKER=true
+else
+    INSIDE_DOCKER=false
+fi
+
+# If running on host, delegate to container
+if [ "$INSIDE_DOCKER" = false ]; then
+    # Load COMPOSE_PROJECT_NAME from .env
+    if [ -f .env ]; then
+        export $(grep -v '^#' .env | grep COMPOSE_PROJECT_NAME | xargs)
+    fi
+    
+    # Use compose project name or default
+    COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-ms365-mcp}
+    
+    # Execute health check inside container
+    exec docker compose exec ms365-mcp /app/health-check.sh
+    exit $?
+fi
+
+# Color codes for output (only used when running inside container)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
