@@ -1,0 +1,77 @@
+services:
+  ms365-mcp:
+    container_name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-server
+    networks:
+      - ms365-mcp-net
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    
+    # Load all configuration from .env file
+    env_file: .env
+    
+    # Environment variables with fallback defaults
+    environment:
+      # Docker Compose Project Name
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-ms365-mcp}
+      
+      # Azure AD App Configuration
+      MS365_MCP_CLIENT_ID: ${MS365_MCP_CLIENT_ID:-}
+      MS365_MCP_CLIENT_SECRET: ${MS365_MCP_CLIENT_SECRET:-}
+      MS365_MCP_TENANT_ID: ${MS365_MCP_TENANT_ID:-}
+      MS365_MCP_REFRESH_TOKEN: ${MS365_MCP_REFRESH_TOKEN:-}
+      MS365_MCP_REDIRECT_URI: ${MS365_MCP_REDIRECT_URI:-}
+      MS365_MCP_REDIRECT_URI_ENCODED: ${MS365_MCP_REDIRECT_URI_ENCODED:-}
+      
+      # Organization Mode (REQUIRED for M365 Business features)
+      MS365_MCP_ORG_MODE: ${MS365_MCP_ORG_MODE:-true}
+      
+      # Authentication Mode
+      USE_LOCAL_AUTH: ${USE_LOCAL_AUTH:-true}
+      USER_ID_MODE: ${USER_ID_MODE:-true}
+      USER_ID_HEADER_NAME: ${USER_ID_HEADER_NAME:-}
+      
+      # Feature Toggles
+      MS365_MCP_ENABLE_MAIL: ${MS365_MCP_ENABLE_MAIL:-true}
+      MS365_MCP_ENABLE_CALENDAR: ${MS365_MCP_ENABLE_CALENDAR:-true}
+      MS365_MCP_ENABLE_FILES: ${MS365_MCP_ENABLE_FILES:-false}
+      MS365_MCP_ENABLE_TEAMS: ${MS365_MCP_ENABLE_TEAMS:-false}
+      MS365_MCP_ENABLE_EXCEL_POWERPOINT: ${MS365_MCP_ENABLE_EXCEL_POWERPOINT:-false}
+      MS365_MCP_ENABLE_ONENOTE: ${MS365_MCP_ENABLE_ONENOTE:-false}
+      MS365_MCP_ENABLE_TASKS: ${MS365_MCP_ENABLE_TASKS:-false}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    
+    # Mount volume for persistent token cache
+    volumes:
+      - token-cache:/app/data
+    
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    
+    # Keep container running in STDIO mode
+    stdin_open: true
+    tty: true
+    
+    # Enable automatic log rotation
+    logging:
+      driver: local
+
+volumes:
+  token-cache:
+    driver: local
+    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-token-cache
+
+networks:
+  ms365-mcp-net:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-net

@@ -74,10 +74,10 @@ web_modules/
 
 # dotenv environment variable files
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.development.local
+.test.local
+.production.local
+.local
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -139,6 +139,10 @@ dist
 
 # Token cache files
 .token-cache.json
+.selected-account.json
+
+# Docker volume data directory
+data/
 
 openapi
 

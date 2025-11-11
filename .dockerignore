@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+.github
+
+# Dependencies
+node_modules
+
+# Build artifacts
+dist
+*.log
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test
+*.test.ts
+*.test.js
+coverage
+
+# Documentation
+*.md
+!README.md
+docs
+
+# CI/CD
+.releaserc.json
+
+# Development
+.env
+.env.local
+.env.*.local
+
+# Token cache (will be created in volume)
+.token-cache.json
+.selected-account.json
+data/
+
+# Docker
+Dockerfile
+docker-compose.yaml
+.dockerignore
