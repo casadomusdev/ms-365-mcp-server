@@ -41,7 +41,7 @@ RUN npm ci --production
 COPY --from=builder /app/dist ./dist
 
 # Copy health check script
-COPY --chmod=755 health-check.sh ./
+COPY --chmod=755 *.sh ./
 
 # Create directory for token cache with proper permissions
 RUN mkdir -p /app/data && \
