@@ -160,7 +160,7 @@ Create a `.env` file with your Azure AD app details:
 ```bash
 cat > .env << 'EOF'
 # Docker Compose Project Name (used for container/network/volume naming)
-COMPOSE_PROJECT_NAME=ms365-mcp
+COMPOSE_PROJECT_NAME=my-project-ms365-mcp
 
 # Organization Mode (REQUIRED for M365 Business - enables shared mailboxes, Teams, SharePoint)
 MS365_MCP_ORG_MODE=true
@@ -177,8 +177,8 @@ MS365_MCP_ENABLE_MAIL=true
 MS365_MCP_ENABLE_CALENDAR=true
 MS365_MCP_ENABLE_FILES=true
 MS365_MCP_ENABLE_TEAMS=true
-MS365_MCP_ENABLE_EXCEL_POWERPOINT=false
-MS365_MCP_ENABLE_ONENOTE=false
+MS365_MCP_ENABLE_EXCEL_POWERPOINT=true
+MS365_MCP_ENABLE_ONENOTE=true
 MS365_MCP_ENABLE_TASKS=true
 EOF
 

@@ -27,11 +27,6 @@ services:
       # Organization Mode (REQUIRED for M365 Business features)
       MS365_MCP_ORG_MODE: ${MS365_MCP_ORG_MODE:-true}
       
-      # Authentication Mode
-      USE_LOCAL_AUTH: ${USE_LOCAL_AUTH:-true}
-      USER_ID_MODE: ${USER_ID_MODE:-true}
-      USER_ID_HEADER_NAME: ${USER_ID_HEADER_NAME:-}
-      
       # Feature Toggles
       MS365_MCP_ENABLE_MAIL: ${MS365_MCP_ENABLE_MAIL:-true}
       MS365_MCP_ENABLE_CALENDAR: ${MS365_MCP_ENABLE_CALENDAR:-true}

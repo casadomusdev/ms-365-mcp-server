@@ -59,8 +59,7 @@ class MicrosoftGraphServer {
       version,
     });
 
-    const shouldRegisterAuthTools =
-      ( !this.options.http || this.options.enableAuthTools ) && process.env.USE_LOCAL_AUTH !== 'true';
+    const shouldRegisterAuthTools = !this.options.http || this.options.enableAuthTools;
     if (shouldRegisterAuthTools) {
       // Tools require full AuthManager API; in non-local mode we pass the real instance
       registerAuthTools(this.server, this.authManager as unknown as import('./auth.js').default);
@@ -181,12 +180,6 @@ class MicrosoftGraphServer {
       });
 
       const oauthProvider = new MicrosoftOAuthProvider(this.authManager);
-
-      // In local auth mode, bypass bearer token middleware for /mcp endpoints
-      const httpAuthMiddleware =
-        process.env.USE_LOCAL_AUTH === 'true'
-          ? (_req: Request, _res: Response, next: () => void) => next()
-          : microsoftBearerTokenAuthMiddleware;
 
       // OAuth Authorization Server Discovery
       app.get('/.well-known/oauth-authorization-server', async (req, res) => {
@@ -405,7 +398,7 @@ class MicrosoftGraphServer {
       // Handle both GET and POST methods as required by MCP Streamable HTTP specification
       app.get(
         '/mcp',
-        httpAuthMiddleware,
+        microsoftBearerTokenAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -450,7 +443,7 @@ class MicrosoftGraphServer {
 
       app.post(
         '/mcp',
-        httpAuthMiddleware,
+        microsoftBearerTokenAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
