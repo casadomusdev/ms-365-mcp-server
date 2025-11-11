@@ -34,7 +34,7 @@ else
 fi
 
 # Check if output contains valid JSON with success=true
-if echo "$OUTPUT" | jq -e '.success == true and .userData.displayName' > /dev/null 2>&1; then
+if echo "$OUTPUT" | jq -e '.success == true and (.userData.displayName != null and .userData.displayName != "")' > /dev/null 2>&1; then
     
     # Extract user data
     DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName')
