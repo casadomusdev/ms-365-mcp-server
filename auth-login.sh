@@ -26,6 +26,10 @@
 
 set -e
 
+# Get script directory and source shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.scripts-lib.sh"
+
 # Parse arguments
 FORCE_FILE_CACHE=false
 INTERACTIVE=true
@@ -70,12 +74,6 @@ if [ "$INTERACTIVE" = true ]; then
     fi
 fi
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${YELLOW}║         MS-365 MCP Server - Device Code Login                  ║${NC}"
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -100,15 +98,38 @@ echo ""
 echo -e "${YELLOW}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Build docker compose command with optional environment variable
-DOCKER_CMD="docker compose run --rm"
-if [ "$FORCE_FILE_CACHE" = true ]; then
-    DOCKER_CMD="$DOCKER_CMD -e FORCE_FILE_CACHE=true"
-fi
-DOCKER_CMD="$DOCKER_CMD ms365-mcp node dist/index.js --login"
+# Detect execution mode
+detect_execution_mode
 
-# Run the login command
-if eval "$DOCKER_CMD"; then
+# Build and run command based on mode
+if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
+    # Docker mode - use docker compose run
+    DOCKER_CMD="docker compose run --rm"
+    if [ "$FORCE_FILE_CACHE" = true ]; then
+        DOCKER_CMD="$DOCKER_CMD -e FORCE_FILE_CACHE=true"
+    fi
+    DOCKER_CMD="$DOCKER_CMD ms365-mcp node dist/index.js --login"
+    
+    if eval "$DOCKER_CMD"; then
+        LOGIN_SUCCESS=true
+    else
+        LOGIN_SUCCESS=false
+    fi
+else
+    # Direct mode - run Node.js locally
+    if [ "$FORCE_FILE_CACHE" = true ]; then
+        export FORCE_FILE_CACHE=true
+    fi
+    
+    if node dist/index.js --login; then
+        LOGIN_SUCCESS=true
+    else
+        LOGIN_SUCCESS=false
+    fi
+fi
+
+# Check result
+if [ "$LOGIN_SUCCESS" = true ]; then
     echo ""
     echo -e "${GREEN}✓ Login successful!${NC}"
     echo ""
