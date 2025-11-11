@@ -121,15 +121,20 @@ class AuthManager {
     try {
       let cacheData: string | undefined;
 
-      try {
-        const cachedData = await keytar.getPassword(SERVICE_NAME, TOKEN_CACHE_ACCOUNT);
-        if (cachedData) {
-          cacheData = cachedData;
+      // Force file-based cache if FORCE_FILE_CACHE env var is set
+      const forceFileCache = process.env.FORCE_FILE_CACHE === 'true' || process.env.FORCE_FILE_CACHE === '1';
+
+      if (!forceFileCache) {
+        try {
+          const cachedData = await keytar.getPassword(SERVICE_NAME, TOKEN_CACHE_ACCOUNT);
+          if (cachedData) {
+            cacheData = cachedData;
+          }
+        } catch (keytarError) {
+          logger.warn(
+            `Keychain access failed, falling back to file storage: ${(keytarError as Error).message}`
+          );
         }
-      } catch (keytarError) {
-        logger.warn(
-          `Keychain access failed, falling back to file storage: ${(keytarError as Error).message}`
-        );
       }
 
       if (!cacheData && existsSync(FALLBACK_PATH)) {
@@ -180,14 +185,23 @@ class AuthManager {
     try {
       const cacheData = this.msalApp.getTokenCache().serialize();
 
-      try {
-        await keytar.setPassword(SERVICE_NAME, TOKEN_CACHE_ACCOUNT, cacheData);
-      } catch (keytarError) {
-        logger.warn(
-          `Keychain save failed, falling back to file storage: ${(keytarError as Error).message}`
-        );
+      // Force file-based cache if FORCE_FILE_CACHE env var is set
+      const forceFileCache = process.env.FORCE_FILE_CACHE === 'true' || process.env.FORCE_FILE_CACHE === '1';
 
+      if (forceFileCache) {
+        // Skip keytar, write directly to file
         fs.writeFileSync(FALLBACK_PATH, cacheData);
+        logger.info('Token cache saved to file (forced)');
+      } else {
+        try {
+          await keytar.setPassword(SERVICE_NAME, TOKEN_CACHE_ACCOUNT, cacheData);
+        } catch (keytarError) {
+          logger.warn(
+            `Keychain save failed, falling back to file storage: ${(keytarError as Error).message}`
+          );
+
+          fs.writeFileSync(FALLBACK_PATH, cacheData);
+        }
       }
     } catch (error) {
       logger.error(`Error saving token cache: ${(error as Error).message}`);
@@ -198,14 +212,23 @@ class AuthManager {
     try {
       const selectedAccountData = JSON.stringify({ accountId: this.selectedAccountId });
 
-      try {
-        await keytar.setPassword(SERVICE_NAME, SELECTED_ACCOUNT_KEY, selectedAccountData);
-      } catch (keytarError) {
-        logger.warn(
-          `Keychain save failed for selected account, falling back to file storage: ${(keytarError as Error).message}`
-        );
+      // Force file-based cache if FORCE_FILE_CACHE env var is set
+      const forceFileCache = process.env.FORCE_FILE_CACHE === 'true' || process.env.FORCE_FILE_CACHE === '1';
 
+      if (forceFileCache) {
+        // Skip keytar, write directly to file
         fs.writeFileSync(SELECTED_ACCOUNT_PATH, selectedAccountData);
+        logger.info('Selected account saved to file (forced)');
+      } else {
+        try {
+          await keytar.setPassword(SERVICE_NAME, SELECTED_ACCOUNT_KEY, selectedAccountData);
+        } catch (keytarError) {
+          logger.warn(
+            `Keychain save failed for selected account, falling back to file storage: ${(keytarError as Error).message}`
+          );
+
+          fs.writeFileSync(SELECTED_ACCOUNT_PATH, selectedAccountData);
+        }
       }
     } catch (error) {
       logger.error(`Error saving selected account: ${(error as Error).message}`);

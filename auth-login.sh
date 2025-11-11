@@ -6,7 +6,11 @@
 # This is a one-time process that caches tokens for automatic refresh.
 #
 # Usage:
-#   ./auth-login.sh
+#   ./auth-login.sh [--force-file-cache]
+#
+# Options:
+#   --force-file-cache    Force tokens to be saved to files instead of system keychain
+#                         (Useful when you need to export tokens for transfer)
 #
 # What to expect:
 #   1. A URL will be displayed (e.g., https://microsoft.com/devicelogin)
@@ -22,15 +26,40 @@
 
 set -e
 
+# Parse arguments
+FORCE_FILE_CACHE=false
+for arg in "$@"; do
+    case $arg in
+        --force-file-cache)
+            FORCE_FILE_CACHE=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $arg"
+            echo "Usage: ./auth-login.sh [--force-file-cache]"
+            exit 1
+            ;;
+    esac
+done
+
 # Color codes
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${YELLOW}║         MS-365 MCP Server - Device Code Login                  ║${NC}"
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo ""
+
+if [ "$FORCE_FILE_CACHE" = true ]; then
+    echo -e "${CYAN}ℹ File-based cache mode enabled${NC}"
+    echo "  Tokens will be saved to files instead of system keychain"
+    echo "  This allows you to export tokens for transfer to other machines"
+    echo ""
+fi
+
 echo "Starting device code authentication flow..."
 echo ""
 echo "Instructions:"
@@ -43,8 +72,15 @@ echo ""
 echo -e "${YELLOW}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
+# Build docker compose command with optional environment variable
+DOCKER_CMD="docker compose run --rm"
+if [ "$FORCE_FILE_CACHE" = true ]; then
+    DOCKER_CMD="$DOCKER_CMD -e FORCE_FILE_CACHE=true"
+fi
+DOCKER_CMD="$DOCKER_CMD ms365-mcp node dist/index.js --login"
+
 # Run the login command
-if docker compose run --rm ms365-mcp node dist/index.js --login; then
+if eval "$DOCKER_CMD"; then
     echo ""
     echo -e "${GREEN}✓ Login successful!${NC}"
     echo ""

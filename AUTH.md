@@ -40,11 +40,15 @@ docker compose up -d
 5. Approve the requested permissions
 6. Tokens are cached in the Docker volume
 
+**Options**:
+- `--force-file-cache` - Force tokens to be saved to files instead of system keychain (useful for token export)
+
 **When to use**:
 - First time setup
 - After tokens have expired
 - After running `auth-logout.sh`
 - When switching to a different Microsoft 365 account
+- **With `--force-file-cache`**: When you need to export tokens for transfer to another machine
 
 **Example output**:
 ```
@@ -436,6 +440,44 @@ docker compose exec ms365-mcp /app/health-check.sh
 ```
 
 ---
+
+---
+
+## Forcing File-Based Token Cache
+
+By default, the system tries to use your operating system's secure keychain (macOS Keychain, Windows Credential Manager, etc.) to store tokens. However, when you need to export tokens for transfer to another machine, you need them in files instead.
+
+### Using --force-file-cache Flag
+
+```bash
+# Force tokens to be saved to files (not system keychain)
+./auth-login.sh --force-file-cache
+```
+
+**When to use this**:
+- When you're authenticating on your local machine and need to export tokens
+- Before transferring authentication to a production server
+- When system keychain access is problematic
+
+**What it does**:
+- Sets `FORCE_FILE_CACHE=true` environment variable
+- Skips system keychain (keytar) entirely
+- Saves tokens directly to `.token-cache.json` and `.selected-account.json` files
+- Makes tokens immediately available for export with `auth-export-tokens.sh`
+
+**Example workflow**:
+```bash
+# Authenticate with file-based cache
+./auth-login.sh --force-file-cache
+
+# Verify it worked
+./auth-verify.sh
+
+# Export for transfer
+./auth-export-tokens.sh
+
+# Now you can transfer tokens-backup/ to another machine
+```
 
 ---
 
