@@ -33,12 +33,11 @@ else
     OUTPUT=$(node dist/index.js --verify-login 2>&1)
 fi
 
-# Check if command succeeded and parse output
-if echo "$OUTPUT" | jq -e '.success' > /dev/null 2>&1 && \
-   [ "$(echo "$OUTPUT" | jq -r '.success')" = "true" ]; then
+# Check if output contains valid JSON with success=true
+if echo "$OUTPUT" | jq -e '.success == true and .userData.displayName' > /dev/null 2>&1; then
     
     # Extract user data
-    DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName // "N/A"')
+    DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName')
     USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userData.userPrincipalName // .userData.mail // "N/A"')
     
     echo -e "${GREEN}✓ Authentication verified${NC}"
