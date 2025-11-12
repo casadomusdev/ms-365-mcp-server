@@ -58,9 +58,11 @@ STOPPED_SOMETHING=false
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-ms365-mcp}
     
-    # Check if docker compose is running
-    if docker compose ps --format json 2>/dev/null | jq -e '.[0]' >/dev/null 2>&1; then
-        echo "Found Docker containers running..."
+    # Check if docker compose has any containers (running or stopped)
+    CONTAINER_COUNT=$(docker compose ps -a --format json 2>/dev/null | jq -s 'length' 2>/dev/null || echo "0")
+    
+    if [ "$CONTAINER_COUNT" -gt 0 ]; then
+        echo "Found Docker containers ($CONTAINER_COUNT)..."
         echo ""
         
         if [ "$FORCE_STOP" = true ]; then
