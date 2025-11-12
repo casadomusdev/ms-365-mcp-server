@@ -34,11 +34,11 @@ else
 fi
 
 # Check if output contains valid JSON with success=true
-if echo "$OUTPUT" | jq -e '.success == true and (.userData.displayName != null and .userData.displayName != "")' > /dev/null 2>&1; then
+if jq -e '.success == true and .userData.displayName' <<< "$OUTPUT" > /dev/null 2>&1; then
     
     # Extract user data
-    DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.userData.displayName')
-    USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userData.userPrincipalName // .userData.mail // "N/A"')
+    DISPLAY_NAME=$(jq -r '.userData.displayName' <<< "$OUTPUT")
+    USER_EMAIL=$(jq -r '.userData.userPrincipalName // .userData.mail // "N/A"' <<< "$OUTPUT")
     
     echo -e "${GREEN}✓ Authentication verified${NC}"
     echo ""
