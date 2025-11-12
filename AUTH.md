@@ -18,8 +18,10 @@ Once authenticated, tokens are cached in a Docker volume and automatically refre
 ./auth-verify.sh
 
 # 3. Start the server
-docker compose up -d
+./start.sh
 ```
+
+**For the absolute fastest start**, see [QUICK_START.md](QUICK_START.md).
 
 ## Authentication Scripts
 
@@ -160,9 +162,29 @@ Run ./auth-login.sh to authenticate again.
 
 ---
 
+
+Found 1 account(s):
+
+  → john.doe@company.com (John Doe) [SELECTED]
+
+Legend:
+  → = Currently selected account
+
+To select a different account:
+  docker compose run --rm ms365-mcp node dist/index.js --select-account <account-id>
+```
+
+**Example output** (no accounts):
+```
+MS-365 MCP Server - List Accounts
+
+No accounts found.
+
+Run ./auth-login.sh to authenticate.
+```
 ### auth-list-accounts.sh
 
-**Purpose**: Lists all authenticated accounts cached in the token store.
+**Purpose**: Lists all authenticated accounts and allows interactive account selection.
 
 **Usage**:
 ```bash
@@ -170,18 +192,55 @@ Run ./auth-login.sh to authenticate again.
 ```
 
 **What happens**:
-- Displays all cached Microsoft 365 accounts
+- Displays all cached Microsoft 365 accounts with numbers
 - Shows which account is currently selected
-- Provides instructions for switching accounts
+- **Interactively prompts** to select a different account (if multiple exist)
+- Automatically switches to the selected account
 
 **When to use**:
 - Multi-account setups
 - Checking which account is active
-- Before selecting a different account
+- Switching between accounts quickly
+
+**Example output** (multiple accounts):
+```
+MS-365 MCP Server - List & Select Accounts
+
+Found 3 account(s):
+
+1. → John Doe (john@company.com) [SELECTED]
+2.   Jane Smith (jane@company.com)
+3.   Bob Johnson (bob@company.com)
+
+Select an account to make it active:
+Enter number (1-3) or press Enter to keep current: 2
+
+Selecting account: Jane Smith (jane@company.com)
+
+✓ Account selected successfully
+
+Active account is now: Jane Smith
+```
 
 **Example output** (single account):
 ```
-MS-365 MCP Server - List Accounts
+MS-365 MCP Server - List & Select Accounts
+
+Found 1 account(s):
+
+1. → John Doe (john@company.com) [SELECTED]
+
+✓ Only one account available
+```
+
+**Example output** (no accounts):
+```
+MS-365 MCP Server - List & Select Accounts
+
+No accounts found.
+
+Run ./auth-login.sh to authenticate.
+```
 ====================================
 
 Found 1 account(s):
@@ -494,12 +553,13 @@ You can export authentication tokens from one machine and import them to another
 ```bash
 # On source machine (Machine A)
 ./auth-export-tokens.sh
+# Creates: tokens-20231211-143022.tar.gz
 
-# Transfer the tokens-backup directory to Machine B
-# (Use scp, encrypted USB, etc.)
+# Transfer securely to Machine B
+scp tokens-*.tar.gz user@machine-b:/path/
 
 # On destination machine (Machine B)
-./auth-import-tokens.sh ./tokens-backup
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz
 ```
 
 ### Detailed Token Export Process
@@ -507,16 +567,17 @@ You can export authentication tokens from one machine and import them to another
 **On the source machine:**
 
 ```bash
-# Export tokens to default directory (./tokens-backup)
+# Export tokens (creates timestamped .tar.gz archive)
 ./auth-export-tokens.sh
+# Creates: tokens-YYYYMMDD-HHMMSS.tar.gz
 
-# Or specify a custom directory
-./auth-export-tokens.sh ./my-tokens
+# Or specify custom filename
+./auth-export-tokens.sh my-backup.tar.gz
 
-# The export includes:
+# The archive includes:
 # - .token-cache.json (MSAL token cache with access/refresh tokens)
 # - .selected-account.json (currently selected account)
-# - .export-timestamp (timestamp for reference)
+# - export-info.txt (metadata: date, hostname, export mode)
 ```
 
 ### Securing Exported Tokens
