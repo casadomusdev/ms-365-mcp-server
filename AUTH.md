@@ -519,7 +519,7 @@ By default, the system tries to use your operating system's secure keychain (mac
 - When system keychain access is problematic
 
 **What it does**:
-- Sets `FORCE_FILE_CACHE=true` environment variable
+- Sets `MS365_MCP_FORCE_FILE_CACHE=true` environment variable
 - Skips system keychain (keytar) entirely
 - Saves tokens directly to `.token-cache.json` and `.selected-account.json` files
 - Makes tokens immediately available for export with `auth-export-tokens.sh`
@@ -777,22 +777,22 @@ rm -rf /tmp/token-import
 - Location locally: Project root directory
 - Files: `.token-cache.json`, `.selected-account.json`
 - Volume: Named Docker volume (`ms365-mcp-token-cache`)
-- Controlled by: `TOKEN_CACHE_DIR` environment variable
+- Controlled by: `MS365_MCP_TOKEN_CACHE_DIR` environment variable
 
 **Environment Variables:**
 
 ```bash
-# TOKEN_CACHE_DIR - where to store file-based tokens
+# MS365_MCP_TOKEN_CACHE_DIR - where to store file-based tokens
 # Default (project root for backward compatibility)
 # Unset or empty = ./
 
 # Docker (set in docker-compose.yaml)
-TOKEN_CACHE_DIR=/app/data
+MS365_MCP_TOKEN_CACHE_DIR=/app/data
 
-# FORCE_FILE_CACHE - skip keychain, use files
+# MS365_MCP_FORCE_FILE_CACHE - skip keychain, use files
 # Default: not set (uses keychain if available)
 # Set to 'true' or '1' to force file-based storage
-FORCE_FILE_CACHE=true  # Use with ./auth-login.sh --force-file-cache
+MS365_MCP_FORCE_FILE_CACHE=true  # Use with ./auth-login.sh --force-file-cache
 ```
 
 **Storage decision logic:**

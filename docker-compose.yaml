@@ -48,22 +48,17 @@ services:
     
     # === HTTP MODE CONFIGURATION ===
     # Uncomment the following line to enable HTTP mode (for both shared network and port exposure):
-    # command: ["node", "dist/index.js", "--http", "${MCP_HTTP_PORT:-3000}"]
+    # command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}"]
     
     # === PORT EXPOSURE (Only for Mode 3 - External Access) ===
     # Uncomment ONLY if you need to expose HTTP to host machine:
     # ports:
-    #   - "127.0.0.1:${MCP_HTTP_PORT:-3000}:${MCP_HTTP_PORT:-3000}"
-    
-    # Load all configuration from .env file
-    env_file: .env
+    #   - "127.0.0.1:${MS365_MCP_HTTP_PORT:-3000}:${MS365_MCP_HTTP_PORT:-3000}"
     
     # Environment variables with fallback defaults
     environment:
       # HTTP Mode Port (only used when HTTP mode is enabled via command override)
-      MCP_HTTP_PORT: ${MCP_HTTP_PORT:-3000}
-      # Docker Compose Project Name
-      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-ms365-mcp}
+      MS365_MCP_HTTP_PORT: ${MS365_MCP_HTTP_PORT:-3000}
       
       # Azure AD App Configuration
       MS365_MCP_CLIENT_ID: ${MS365_MCP_CLIENT_ID:-}
@@ -86,7 +81,7 @@ services:
       MS365_MCP_ENABLE_TASKS: ${MS365_MCP_ENABLE_TASKS:-false}
       
       # Logging
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MS365_MCP_LOG_LEVEL: ${MS365_MCP_LOG_LEVEL:-info}
     
     # Mount volume for persistent token cache
     volumes:

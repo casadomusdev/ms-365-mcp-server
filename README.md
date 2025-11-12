@@ -367,12 +367,12 @@ When running as an MCP server, the following options can be used:
 
 Environment variables:
 
-- `READ_ONLY=true|1`: Alternative to --read-only flag
-- `ENABLED_TOOLS`: Filter tools using a regex pattern (alternative to --enabled-tools flag)
+- `MS365_MCP_READ_ONLY=true|1`: Alternative to --read-only flag
+- `MS365_MCP_ENABLED_TOOLS`: Filter tools using a regex pattern (alternative to --enabled-tools flag)
 - `MS365_MCP_ORG_MODE=true|1`: Enable organization/work mode (alternative to --org-mode flag)
 - `MS365_MCP_FORCE_WORK_SCOPES=true|1`: Backwards compatibility for MS365_MCP_ORG_MODE
-- `LOG_LEVEL`: Set logging level (default: 'info')
-- `SILENT=true|1`: Disable console output
+- `MS365_MCP_LOG_LEVEL`: Set logging level (default: 'info')
+- `MS365_MCP_SILENT=true|1`: Disable console output
 - `MS365_MCP_CLIENT_ID`: Custom Azure app client ID (defaults to built-in app)
 - `MS365_MCP_TENANT_ID`: Custom tenant ID (defaults to 'common' for multi-tenant)
 - `MS365_MCP_OAUTH_TOKEN`: Pre-existing OAuth token for Microsoft Graph API (BYOT method)

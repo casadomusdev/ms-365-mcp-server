@@ -1,5 +1,5 @@
 import type { AccountInfo, Configuration } from '@azure/msal-node';
-import { PublicClientApplication } from '@azure/msal-node';
+import { PublicClientApplication, ConfidentialClientApplication } from '@azure/msal-node';
 import keytar from 'keytar';
 import logger from './logger.js';
 import fs, { existsSync, readFileSync } from 'fs';
@@ -28,7 +28,7 @@ const SERVICE_NAME = 'ms-365-mcp-server';
 const TOKEN_CACHE_ACCOUNT = 'msal-token-cache';
 const SELECTED_ACCOUNT_KEY = 'selected-account';
 // Use TOKEN_CACHE_DIR env var if set (e.g., /app/data in Docker), otherwise use project root for backward compatibility
-const FALLBACK_DIR = process.env.TOKEN_CACHE_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FALLBACK_DIR = process.env.MS365_MCP_TOKEN_CACHE_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FALLBACK_PATH = path.join(FALLBACK_DIR, '.token-cache.json');
 const SELECTED_ACCOUNT_PATH = path.join(FALLBACK_DIR, '.selected-account.json');
 
@@ -93,36 +93,62 @@ interface LoginTestResult {
 class AuthManager {
   private config: Configuration;
   private scopes: string[];
-  private msalApp: PublicClientApplication;
+  private msalApp: PublicClientApplication | ConfidentialClientApplication;
   private accessToken: string | null;
   private tokenExpiry: number | null;
   private oauthToken: string | null;
   private isOAuthMode: boolean;
+  private isClientCredentialsMode: boolean;
   private selectedAccountId: string | null;
 
   constructor(
     config: Configuration = DEFAULT_CONFIG,
     scopes: string[] = buildScopesFromEndpoints()
   ) {
-    logger.info(`And scopes are ${scopes.join(', ')}`, scopes);
     this.config = config;
     this.scopes = scopes;
-    this.msalApp = new PublicClientApplication(this.config);
     this.accessToken = null;
     this.tokenExpiry = null;
     this.selectedAccountId = null;
 
+    // Check for OAuth token mode
     const oauthTokenFromEnv = process.env.MS365_MCP_OAUTH_TOKEN;
     this.oauthToken = oauthTokenFromEnv ?? null;
     this.isOAuthMode = oauthTokenFromEnv != null;
+
+    // Check for client credentials mode (app permissions)
+    const clientSecret = process.env.MS365_MCP_CLIENT_SECRET;
+    this.isClientCredentialsMode = !this.isOAuthMode && !!clientSecret;
+
+    // Initialize appropriate MSAL application based on authentication mode
+    if (this.isClientCredentialsMode) {
+      // Client credentials flow (app permissions) - requires client secret
+      const confidentialConfig: Configuration = {
+        auth: {
+          clientId: this.config.auth.clientId,
+          authority: this.config.auth.authority,
+          clientSecret: clientSecret,
+        },
+      };
+      this.msalApp = new ConfidentialClientApplication(confidentialConfig);
+      // Convert scopes to application permission format
+      this.scopes = ['https://graph.microsoft.com/.default'];
+      logger.info('Initialized in CLIENT CREDENTIALS mode (application permissions)');
+      logger.info(`Using scopes: ${this.scopes.join(', ')}`);
+    } else {
+      // Device code flow (delegated permissions) - for user context
+      this.msalApp = new PublicClientApplication(this.config);
+      logger.info('Initialized in DEVICE CODE mode (delegated permissions)');
+      logger.info(`Using scopes: ${scopes.join(', ')}`);
+    }
   }
 
   async loadTokenCache(): Promise<void> {
     try {
       let cacheData: string | undefined;
 
-      // Force file-based cache if FORCE_FILE_CACHE env var is set
-      const forceFileCache = process.env.FORCE_FILE_CACHE === 'true' || process.env.FORCE_FILE_CACHE === '1';
+      // Force file-based cache if MS365_MCP_FORCE_FILE_CACHE env var is set
+      const forceFileCache = process.env.MS365_MCP_FORCE_FILE_CACHE === 'true' || process.env.MS365_MCP_FORCE_FILE_CACHE === '1';
 
       if (!forceFileCache) {
         try {
@@ -185,8 +211,8 @@ class AuthManager {
     try {
       const cacheData = this.msalApp.getTokenCache().serialize();
 
-      // Force file-based cache if FORCE_FILE_CACHE env var is set
-      const forceFileCache = process.env.FORCE_FILE_CACHE === 'true' || process.env.FORCE_FILE_CACHE === '1';
+      // Force file-based cache if MS365_MCP_FORCE_FILE_CACHE env var is set
+      const forceFileCache = process.env.MS365_MCP_FORCE_FILE_CACHE === 'true' || process.env.MS365_MCP_FORCE_FILE_CACHE === '1';
 
       if (forceFileCache) {
         // Skip keytar, write directly to file
@@ -249,6 +275,28 @@ class AuthManager {
       return this.accessToken;
     }
 
+    // Client credentials flow - no user account needed
+    if (this.isClientCredentialsMode) {
+      try {
+        const response = await (this.msalApp as ConfidentialClientApplication).acquireTokenByClientCredential({
+          scopes: this.scopes,
+        });
+        
+        if (response) {
+          this.accessToken = response.accessToken;
+          this.tokenExpiry = response.expiresOn ? new Date(response.expiresOn).getTime() : null;
+          await this.saveTokenCache();
+          return this.accessToken;
+        }
+        
+        throw new Error('Client credentials token acquisition returned no response');
+      } catch (error) {
+        logger.error(`Client credentials token acquisition failed: ${(error as Error).message}`);
+        throw new Error(`Client credentials token acquisition failed: ${(error as Error).message}`);
+      }
+    }
+
+    // Device code flow - requires user account
     const currentAccount = await this.getCurrentAccount();
 
     if (currentAccount) {
@@ -296,6 +344,12 @@ class AuthManager {
   }
 
   async acquireTokenByDeviceCode(hack?: (message: string) => void): Promise<string | null> {
+    // Device code flow is only available with PublicClientApplication
+    if (this.isClientCredentialsMode) {
+      logger.error('Device code flow is not supported in client credentials mode');
+      throw new Error('Device code flow is not supported in client credentials mode. Use client secret authentication instead.');
+    }
+
     const deviceCodeRequest = {
       scopes: this.scopes,
       deviceCodeCallback: (response: { message: string }) => {
@@ -312,7 +366,7 @@ class AuthManager {
     try {
       logger.info('Requesting device code...');
       logger.info(`Requesting scopes: ${this.scopes.join(', ')}`);
-      const response = await this.msalApp.acquireTokenByDeviceCode(deviceCodeRequest);
+      const response = await (this.msalApp as PublicClientApplication).acquireTokenByDeviceCode(deviceCodeRequest);
       logger.info(`Granted scopes: ${response?.scopes?.join(', ') || 'none'}`);
       logger.info('Device code login successful');
       this.accessToken = response?.accessToken || null;

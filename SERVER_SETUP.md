@@ -31,6 +31,69 @@ The server runs in **Docker** using **STDIO mode** which:
 
 **Without org-mode**, you would only have access to personal mailbox, calendar, and files. For Microsoft 365 Business deployments, **org-mode is mandatory**.
 
+## Authentication Modes
+
+The MS-365 MCP Server supports two authentication modes:
+
+### Device Code Flow (Default - Delegated Permissions)
+
+**When to use:**
+- Personal Microsoft 365 accounts
+- When you want access limited to what a specific user can access
+- Development and testing scenarios
+- Single-user deployments
+
+**How it works:**
+- Interactive user login required (one-time setup)
+- Uses `PublicClientApplication` from MSAL
+- Requires **Delegated Permissions** in Azure AD
+- Access token represents the signed-in user
+- Access limited to resources the user has permission to access
+
+**Configuration:**
+- Do NOT set `MS365_MCP_CLIENT_SECRET` in `.env`
+- Run `./auth-login.sh` for initial authentication
+- Tokens are cached and automatically refreshed
+
+### Client Credentials Flow (Application Permissions)
+
+**When to use:**
+- Automated processes and background services
+- When you need access to ALL mailboxes/calendars in the tenant
+- Server-to-server scenarios without user interaction
+- Production deployments with service accounts
+
+**How it works:**
+- No interactive login required
+- Uses `ConfidentialClientApplication` from MSAL
+- Requires **Application Permissions** in Azure AD (not Delegated)
+- Access token represents the application itself
+- Access to ALL resources the app has permission to access
+
+**Configuration:**
+- Set `MS365_MCP_CLIENT_SECRET` in `.env` file
+- Set `MS365_MCP_TENANT_ID` to your specific tenant ID (not "common")
+- Configure **Application Permissions** in Azure AD (see section below)
+- Grant admin consent for all permissions
+- No interactive login needed - tokens acquired automatically
+
+**Required Application Permissions in Azure AD:**
+
+When using client credentials mode, you must configure the following **Application Permissions** (not Delegated):
+
+- **Mail:** Mail.Read, Mail.ReadWrite, Mail.Send
+- **Calendars:** Calendars.Read, Calendars.ReadWrite
+- **Files:** Files.Read.All, Files.ReadWrite.All
+- **User:** User.Read.All
+- **Tasks:** Tasks.Read, Tasks.ReadWrite
+- **Contacts:** Contacts.Read, Contacts.ReadWrite
+- **OneNote:** Notes.Read, Notes.Create
+- **Teams:** Chat.Read, Chat.ReadWrite, Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMessage.Send, TeamMember.Read.All
+- **SharePoint:** Sites.Read.All
+- **People:** People.Read
+
+**IMPORTANT:** After adding these permissions, you MUST click "Grant admin consent for [Your Organization]" in the Azure AD portal. Application permissions always require admin consent.
+
 ## Prerequisites
 
 ### Server Requirements
@@ -169,7 +232,7 @@ COMPOSE_PROJECT_NAME=my-project-ms365-mcp
 MS365_MCP_ORG_MODE=true
 
 # Optional: Log level (debug, info, warn, error)
-LOG_LEVEL=info
+MS365_MCP_LOG_LEVEL=info
 
 # Azure AD App Configuration (REQUIRED for M365 Business)
 MS365_MCP_CLIENT_ID=your-application-client-id-here
@@ -194,7 +257,7 @@ chmod 600 .env
 **Configuration Notes**:
 - `COMPOSE_PROJECT_NAME`: Names all Docker resources (container, network, volume). Change this to run multiple instances.
 - `MS365_MCP_ORG_MODE`: Enabled by default - REQUIRED for shared mailboxes, Teams, SharePoint.
-- `LOG_LEVEL`: Controls logging verbosity. Use `debug` for troubleshooting.
+- `MS365_MCP_LOG_LEVEL`: Controls logging verbosity. Use `debug` for troubleshooting.
 - Feature toggles: Enable/disable specific M365 service groups as needed.
 
 **Docker Resources Created**:
@@ -765,7 +828,7 @@ Edit `docker-compose.yaml`:
 services:
   ms365-mcp:
     # Uncomment to enable HTTP mode:
-    command: ["node", "dist/index.js", "--http", "${MCP_HTTP_PORT:-3000}"]
+    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}"]
     
     # Keep ports commented - no host exposure needed
     # ports:

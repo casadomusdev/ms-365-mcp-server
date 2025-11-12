@@ -11,7 +11,7 @@ if (!fs.existsSync(logsDir)) {
 }
 
 const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
+  level: process.env.MS365_MCP_LOG_LEVEL || 'info',
   format: winston.format.combine(
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss',
@@ -35,7 +35,7 @@ export const enableConsoleLogging = (): void => {
   logger.add(
     new winston.transports.Console({
       format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
-      silent: process.env.SILENT === 'true' || process.env.SILENT === '1',
+      silent: process.env.MS365_MCP_SILENT === 'true' || process.env.MS365_MCP_SILENT === '1',
     })
   );
 };

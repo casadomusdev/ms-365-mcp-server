@@ -75,10 +75,27 @@ if [ "$INTERACTIVE" = true ]; then
 fi
 
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${YELLOW}║         MS-365 MCP Server - Device Code Login                  ║${NC}"
+echo -e "${YELLOW}║         MS-365 MCP Server - Authentication Setup               ║${NC}"
 echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo ""
 
+# Check if client secret is configured (client credentials mode)
+if [ -f .env ]; then
+    CLIENT_SECRET=$(grep "^MS365_MCP_CLIENT_SECRET=" .env | cut -d '=' -f2)
+fi
+
+if [ -n "$CLIENT_SECRET" ]; then
+    echo -e "${CYAN}ℹ Client Credentials Mode Detected${NC}"
+    echo "  MS365_MCP_CLIENT_SECRET is configured"
+    echo "  No interactive login required - using app permissions"
+    echo ""
+    echo "Verifying connectivity with Microsoft Graph API..."
+    
+    # In client credentials mode, just verify that the setup works
+    exec "$SCRIPT_DIR/auth-verify.sh"
+fi
+
+# Device code flow mode
 if [ "$FORCE_FILE_CACHE" = true ]; then
     echo -e "${CYAN}ℹ File-based cache mode enabled${NC}"
     echo "  Tokens will be saved to files instead of system keychain"
@@ -106,7 +123,7 @@ if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
     # Docker mode - use docker compose run
     DOCKER_CMD="docker compose run --rm"
     if [ "$FORCE_FILE_CACHE" = true ]; then
-        DOCKER_CMD="$DOCKER_CMD -e FORCE_FILE_CACHE=true"
+        DOCKER_CMD="$DOCKER_CMD -e MS365_MCP_FORCE_FILE_CACHE=true"
     fi
     DOCKER_CMD="$DOCKER_CMD ms365-mcp node dist/index.js --login"
     
@@ -118,7 +135,7 @@ if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
 else
     # Direct mode - run Node.js locally
     if [ "$FORCE_FILE_CACHE" = true ]; then
-        export FORCE_FILE_CACHE=true
+        export MS365_MCP_FORCE_FILE_CACHE=true
     fi
     
     if node dist/index.js --login; then

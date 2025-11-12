@@ -66,12 +66,12 @@ export function parseArgs(): CommandOptions {
   program.parse();
   const options = program.opts();
 
-  if (process.env.READ_ONLY === 'true' || process.env.READ_ONLY === '1') {
+  if (process.env.MS365_MCP_READ_ONLY === 'true' || process.env.MS365_MCP_READ_ONLY === '1') {
     options.readOnly = true;
   }
 
-  if (process.env.ENABLED_TOOLS) {
-    options.enabledTools = process.env.ENABLED_TOOLS;
+  if (process.env.MS365_MCP_ENABLED_TOOLS) {
+    options.enabledTools = process.env.MS365_MCP_ENABLED_TOOLS;
   }
 
   if (process.env.MS365_MCP_ORG_MODE === 'true' || process.env.MS365_MCP_ORG_MODE === '1') {

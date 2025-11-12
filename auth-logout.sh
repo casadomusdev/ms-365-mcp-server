@@ -34,20 +34,32 @@ fi
 
 echo ""
 echo "Logging out..."
+echo ""
 
-# Detect execution mode and run appropriately
+# Detect execution mode
 detect_execution_mode
 
+# Build and run command based on mode
 if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
-    # Use docker compose run for one-off logout
-    LOGOUT_SUCCESS=$(docker compose run --rm ms365-mcp node dist/index.js --logout && echo "true" || echo "false")
+    # Docker mode - use docker compose run
+    DOCKER_CMD="docker compose run --rm ms365-mcp node dist/index.js --logout"
+    
+    if eval "$DOCKER_CMD"; then
+        LOGOUT_SUCCESS=true
+    else
+        LOGOUT_SUCCESS=false
+    fi
 else
-    # Run directly
-    LOGOUT_SUCCESS=$(node dist/index.js --logout && echo "true" || echo "false")
+    # Direct mode - run Node.js locally
+    if node dist/index.js --logout; then
+        LOGOUT_SUCCESS=true
+    else
+        LOGOUT_SUCCESS=false
+    fi
 fi
 
 # Check result
-if [ "$LOGOUT_SUCCESS" = "true" ]; then
+if [ "$LOGOUT_SUCCESS" = true ]; then
     echo ""
     echo -e "${GREEN}✓ Logged out successfully${NC}"
     echo ""

@@ -11,6 +11,29 @@ async function main(): Promise<void> {
   try {
     const args = parseArgs();
 
+    // Log authentication mode at startup
+    const clientSecret = process.env.MS365_MCP_CLIENT_SECRET;
+    const oauthToken = process.env.MS365_MCP_OAUTH_TOKEN;
+    
+    if (oauthToken) {
+      logger.info('═══════════════════════════════════════════════════════════');
+      logger.info('Authentication Mode: OAUTH TOKEN (Manual)');
+      logger.info('Using pre-configured OAuth token from environment');
+      logger.info('═══════════════════════════════════════════════════════════');
+    } else if (clientSecret) {
+      logger.info('═══════════════════════════════════════════════════════════');
+      logger.info('Authentication Mode: CLIENT CREDENTIALS (Application Permissions)');
+      logger.info('No user login required - using app-level permissions');
+      logger.info('Access: ALL mailboxes/calendars/files in tenant');
+      logger.info('═══════════════════════════════════════════════════════════');
+    } else {
+      logger.info('═══════════════════════════════════════════════════════════');
+      logger.info('Authentication Mode: DEVICE CODE (Delegated Permissions)');
+      logger.info('User login required - using user-level permissions');
+      logger.info('Access: Limited to user\'s permissions');
+      logger.info('═══════════════════════════════════════════════════════════');
+    }
+
     const includeWorkScopes = args.orgMode || false;
     if (includeWorkScopes) {
       logger.info('Organization mode enabled - including work account scopes');
