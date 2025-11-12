@@ -2,14 +2,16 @@
 #
 # MS-365 MCP Server - Start Script
 #
-# Sets up and starts the MS-365 MCP server with Docker Compose.
+# Sets up and starts the MS-365 MCP server in Docker or local mode.
 # Validates environment configuration before starting.
 #
 # Usage:
-#   ./start.sh [--build]
+#   ./start.sh [--build] [--docker|--local]
 #
 # Options:
-#   --build    Force rebuild of Docker image
+#   --build   Force rebuild of Docker image
+#   --docker  Run in Docker mode
+#   --local   Run locally without Docker
 #
 # Exit codes:
 #   0 - Server started successfully
@@ -26,15 +28,30 @@ NC='\033[0m' # No Color
 
 # Parse arguments
 FORCE_BUILD=false
+RUN_MODE=""
+
 for arg in "$@"; do
     case $arg in
         --build)
             FORCE_BUILD=true
             shift
             ;;
+        --docker)
+            RUN_MODE="docker"
+            shift
+            ;;
+        --local)
+            RUN_MODE="local"
+            shift
+            ;;
         *)
             echo "Unknown option: $arg"
-            echo "Usage: ./start.sh [--build]"
+            echo "Usage: ./start.sh [--build] [--docker|--local]"
+            echo ""
+            echo "Options:"
+            echo "  --build   Force rebuild of Docker image"
+            echo "  --docker  Run in Docker mode"
+            echo "  --local   Run locally without Docker"
             exit 1
             ;;
     esac
@@ -57,12 +74,6 @@ if [ ! -f .env ]; then
     echo "  - MS365_MCP_CLIENT_ID     (from Azure AD App Registration)"
     echo "  - MS365_MCP_TENANT_ID     (use 'common' or your tenant ID)"
     echo ""
-    echo "Optional but recommended:"
-    echo "  - MS365_MCP_CLIENT_SECRET (if using confidential client)"
-    echo ""
-    echo "For detailed setup instructions, see:"
-    echo "  https://github.com/your-repo/ms-365-mcp-server#setup"
-    echo ""
     exit 1
 fi
 
@@ -84,7 +95,6 @@ if [ -z "$MS365_MCP_TENANT_ID" ]; then
     MISSING_VARS+=("MS365_MCP_TENANT_ID")
 fi
 
-# Check if any required variables are missing
 if [ ${#MISSING_VARS[@]} -ne 0 ]; then
     echo -e "${RED}✗ Missing required environment variables:${NC}"
     for var in "${MISSING_VARS[@]}"; do
@@ -92,104 +102,170 @@ if [ ${#MISSING_VARS[@]} -ne 0 ]; then
     done
     echo ""
     echo "Please edit your .env file and set these values."
-    echo "See .env.example for details."
-    echo ""
     exit 1
 fi
 
 echo -e "${GREEN}✓ Environment variables validated${NC}"
 
-# Show current configuration
+# Show configuration
 echo ""
 echo -e "${CYAN}Current Configuration:${NC}"
 echo "  Client ID: ${MS365_MCP_CLIENT_ID:0:8}..."
 echo "  Tenant ID: $MS365_MCP_TENANT_ID"
-echo "  Org Mode:  ${MS365_MCP_ORG_MODE:-false}"
-echo "  Log Level: ${LOG_LEVEL:-info}"
 echo ""
 
-# Check if Docker is running
-if ! docker info > /dev/null 2>&1; then
-    echo -e "${RED}✗ Error: Docker is not running${NC}"
+# Check Docker availability
+DOCKER_AVAILABLE=false
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+fi
+
+# Determine run mode if not specified
+if [ -z "$RUN_MODE" ]; then
+    if [ "$DOCKER_AVAILABLE" = true ]; then
+        echo -e "${CYAN}Select run mode:${NC}"
+        echo "  1. Docker (recommended, isolated environment)"
+        echo "  2. Local (direct Node.js, no Docker needed)"
+        echo ""
+        read -p "Choose mode (1 or 2) [1]: " MODE_CHOICE
+        MODE_CHOICE=${MODE_CHOICE:-1}
+        
+        if [ "$MODE_CHOICE" = "2" ]; then
+            RUN_MODE="local"
+        else
+            RUN_MODE="docker"
+        fi
+    else
+        echo -e "${YELLOW}⚠  Docker not available - using local mode${NC}"
+        RUN_MODE="local"
+    fi
+fi
+
+# Validate mode selection
+if [ "$RUN_MODE" = "docker" ] && [ "$DOCKER_AVAILABLE" = false ]; then
+    echo -e "${RED}✗ Docker mode selected but Docker is not available${NC}"
     echo ""
-    echo "Please start Docker Desktop and try again."
+    echo "Please either:"
+    echo "  - Start Docker Desktop"
+    echo "  - Run in local mode: ./start.sh --local"
     echo ""
     exit 1
 fi
 
-echo -e "${GREEN}✓ Docker is running${NC}"
+echo ""
+echo -e "${GREEN}✓ Run mode: $RUN_MODE${NC}"
+echo ""
 
-# Check if image needs to be built
-IMAGE_EXISTS=$(docker images -q ms365-mcp-server 2> /dev/null)
-
-if [ -z "$IMAGE_EXISTS" ] || [ "$FORCE_BUILD" = true ]; then
-    if [ "$FORCE_BUILD" = true ]; then
+# Docker mode
+if [ "$RUN_MODE" = "docker" ]; then
+    # Get compose project name
+    COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-ms365-mcp}
+    IMAGE_NAME="${COMPOSE_PROJECT}-ms365-mcp"
+    
+    # Check if image exists
+    IMAGE_EXISTS=$(docker images -q "$IMAGE_NAME" 2>/dev/null)
+    
+    if [ -z "$IMAGE_EXISTS" ] || [ "$FORCE_BUILD" = true ]; then
+        if [ "$FORCE_BUILD" = true ]; then
+            echo -e "${YELLOW}Building Docker image (forced rebuild)...${NC}"
+        else
+            echo -e "${YELLOW}Building Docker image (first time)...${NC}"
+        fi
+        echo "This may take a few minutes..."
         echo ""
-        echo -e "${YELLOW}Building Docker image (forced rebuild)...${NC}"
+        
+        if docker compose build; then
+            echo ""
+            echo -e "${GREEN}✓ Docker image built successfully${NC}"
+        else
+            echo ""
+            echo -e "${RED}✗ Docker build failed${NC}"
+            exit 1
+        fi
     else
-        echo ""
-        echo -e "${YELLOW}Building Docker image (first time)...${NC}"
+        echo -e "${GREEN}✓ Docker image exists ($IMAGE_NAME)${NC}"
     fi
-    echo "This may take a few minutes..."
+    
+    # Start containers
+    echo ""
+    echo -e "${YELLOW}Starting containers...${NC}"
     echo ""
     
-    if docker compose build; then
+    if docker compose up -d; then
         echo ""
-        echo -e "${GREEN}✓ Docker image built successfully${NC}"
+        echo -e "${GREEN}✓ Containers started successfully${NC}"
     else
         echo ""
-        echo -e "${RED}✗ Docker build failed${NC}"
-        echo ""
+        echo -e "${RED}✗ Failed to start containers${NC}"
         exit 1
     fi
+    
+    # Wait for initialization
+    sleep 2
+    
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ MS-365 MCP Server is running (Docker mode)${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "Next Steps:"
+    echo "  1. Authenticate:     ./auth-login.sh"
+    echo "  2. Verify:           ./auth-verify.sh"
+    echo "  3. Health check:     ./health-check.sh"
+    echo ""
+    echo "Useful Commands:"
+    echo "  View logs:           docker compose logs -f"
+    echo "  Stop server:         docker compose down"
+    echo "  Restart:             docker compose restart"
+    echo "  Rebuild:             ./start.sh --build"
+    echo ""
+
+# Local mode
 else
-    echo -e "${GREEN}✓ Docker image already built${NC}"
+    echo -e "${YELLOW}Setting up local environment...${NC}"
+    echo ""
+    
+    # Check for Node.js
+    if ! command -v node >/dev/null 2>&1; then
+        echo -e "${RED}✗ Node.js not found${NC}"
+        echo "Please install Node.js to run in local mode"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Node.js found: $(node --version)${NC}"
+    
+    # Install dependencies if needed
+    if [ ! -d "node_modules" ]; then
+        echo ""
+        echo "Installing dependencies..."
+        npm install
+        echo ""
+    fi
+    
+    # Build if needed
+    if [ ! -d "dist" ] || [ "$FORCE_BUILD" = true ]; then
+        echo "Building project..."
+        npm run build
+        echo ""
+    fi
+    
+    echo -e "${GREEN}✓ Project built${NC}"
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ Starting MS-365 MCP Server (Local mode)${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "Next Steps:"
+    echo "  1. Authenticate:     ./auth-login.sh"
+    echo "  2. Verify:           ./auth-verify.sh"
+    echo "  3. Health check:     ./health-check.sh"
+    echo ""
+    echo "The server will start now..."
+    echo "Press Ctrl+C to stop"
+    echo ""
+    
+    # Start the server
+    node dist/index.js
 fi
-
-# Start the containers
-echo ""
-echo -e "${YELLOW}Starting containers...${NC}"
-echo ""
-
-if docker compose up -d; then
-    echo ""
-    echo -e "${GREEN}✓ Containers started successfully${NC}"
-else
-    echo ""
-    echo -e "${RED}✗ Failed to start containers${NC}"
-    echo ""
-    exit 1
-fi
-
-# Wait a moment for containers to initialize
-sleep 2
-
-# Check container status
-CONTAINER_STATUS=$(docker compose ps --format json | jq -r '.[0].State' 2>/dev/null || echo "unknown")
-
-echo ""
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ MS-365 MCP Server is running!${NC}"
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo ""
-
-# Check if authenticated
-echo "Next Steps:"
-echo ""
-echo "1. Authenticate with Microsoft 365:"
-echo -e "   ${CYAN}./auth-login.sh${NC}"
-echo ""
-echo "2. Verify authentication:"
-echo -e "   ${CYAN}./auth-verify.sh${NC}"
-echo ""
-echo "3. Check server health:"
-echo -e "   ${CYAN}./health-check.sh${NC}"
-echo ""
-echo "Useful Commands:"
-echo "  View logs:         docker compose logs -f"
-echo "  Stop server:       docker compose down"
-echo "  Restart server:    docker compose restart"
-echo "  Rebuild & restart: ./start.sh --build"
-echo ""
 
 exit 0
