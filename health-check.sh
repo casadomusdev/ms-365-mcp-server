@@ -76,9 +76,9 @@ echo ""
 
 if OUTPUT=$(node dist/index.js --verify-login 2>&1); then
     # Parse the JSON output
-    if echo "$OUTPUT" | jq -e '.displayName' > /dev/null 2>&1; then
-        DISPLAY_NAME=$(echo "$OUTPUT" | jq -r '.displayName')
-        USER_EMAIL=$(echo "$OUTPUT" | jq -r '.userPrincipalName // .mail // "N/A"')
+    if jq -e '.success == true and .userData.displayName' <<< "$OUTPUT" > /dev/null 2>&1; then
+        DISPLAY_NAME=$(jq -r '.userData.displayName' <<< "$OUTPUT")
+        USER_EMAIL=$(jq -r '.userData.userPrincipalName // .userData.mail // "N/A"' <<< "$OUTPUT")
         
         echo ""
         print_status "ok" "Authentication verified"
