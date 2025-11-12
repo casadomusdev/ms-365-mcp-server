@@ -478,6 +478,153 @@ class AuthManager {
   getSelectedAccountId(): string | null {
     return this.selectedAccountId;
   }
+
+  async listMailboxes(): Promise<any> {
+    try {
+      const token = await this.getToken();
+      if (!token) {
+        throw new Error('No valid token found');
+      }
+
+      const mailboxes: any[] = [];
+
+      // 1. Get the current user's personal mailbox
+      try {
+        const meResponse = await fetch('https://graph.microsoft.com/v1.0/me', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (meResponse.ok) {
+          const userData = await meResponse.json();
+          mailboxes.push({
+            id: userData.id,
+            type: 'personal',
+            displayName: userData.displayName,
+            email: userData.userPrincipalName || userData.mail,
+            isPrimary: true,
+          });
+          logger.info(`Found personal mailbox: ${userData.displayName}`);
+        }
+      } catch (error) {
+        logger.error(`Error fetching personal mailbox: ${(error as Error).message}`);
+      }
+
+      // 2. Try to discover shared/delegated mailboxes using a more efficient approach
+      // Instead of querying all users, we'll use the MailboxSettings endpoint
+      try {
+        // Try to get delegated mailboxes through mailbox settings
+        const settingsResponse = await fetch(
+          'https://graph.microsoft.com/v1.0/me/mailboxSettings',
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (settingsResponse.ok) {
+          const settings = await settingsResponse.json();
+          if (settings.delegateMeetingMessageDeliveryOptions) {
+            logger.info('User has delegate settings configured');
+          }
+        }
+      } catch (error) {
+        logger.debug(`Could not query mailbox settings: ${(error as Error).message}`);
+      }
+
+      // 3. Try to find shared mailboxes by querying for mailbox folders we have access to
+      // This is more efficient than testing all users
+      try {
+        // Query for shared/delegated folders - limit to reasonable number
+        const usersResponse = await fetch(
+          'https://graph.microsoft.com/v1.0/users?$filter=userType eq \'Member\'&$select=id,displayName,userPrincipalName,mail&$top=50',
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (usersResponse.ok) {
+          const usersData = await usersResponse.json();
+          const users = usersData.value || [];
+          
+          logger.info(`Checking access to ${users.length} potential mailboxes...`);
+
+          // Limit concurrent requests to avoid overwhelming the API
+          const maxConcurrent = 5;
+          for (let i = 0; i < users.length; i += maxConcurrent) {
+            const batch = users.slice(i, i + maxConcurrent);
+            
+            await Promise.all(batch.map(async (user: any) => {
+              // Skip the current user (already added as personal mailbox)
+              if (mailboxes.length > 0 && user.id === mailboxes[0].id) {
+                return;
+              }
+
+              try {
+                // Try to read mail folders to test access with a timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+                
+                const mailFoldersResponse = await fetch(
+                  `https://graph.microsoft.com/v1.0/users/${user.id}/mailFolders?$top=1`,
+                  {
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                    },
+                    signal: controller.signal,
+                  }
+                );
+
+                clearTimeout(timeoutId);
+
+                if (mailFoldersResponse.ok) {
+                  // User has access to this mailbox
+                  const isShared = user.userPrincipalName?.toLowerCase().includes('shared') || 
+                                  user.displayName?.toLowerCase().includes('shared') ||
+                                  user.mail?.toLowerCase().includes('shared');
+                  
+                  mailboxes.push({
+                    id: user.id,
+                    type: isShared ? 'shared' : 'delegated',
+                    displayName: user.displayName,
+                    email: user.userPrincipalName || user.mail,
+                    isPrimary: false,
+                  });
+                  logger.info(`Found accessible mailbox: ${user.displayName}`);
+                }
+              } catch (error: any) {
+                // Silently skip mailboxes we don't have access to or timeout
+                if (error.name !== 'AbortError') {
+                  logger.debug(`No access to mailbox ${user.displayName}: ${error.message}`);
+                }
+              }
+            }));
+          }
+        } else {
+          const errorText = await usersResponse.text();
+          logger.warn(`Could not query users for shared mailboxes: ${usersResponse.status} - ${errorText}`);
+        }
+      } catch (error) {
+        logger.warn(`Could not query for delegated/shared mailboxes: ${(error as Error).message}`);
+      }
+
+      return {
+        success: true,
+        mailboxes,
+        note: mailboxes.length === 1 ? 'Only personal mailbox found. Shared/delegated mailboxes may require additional permissions (User.ReadBasic.All).' : undefined,
+      };
+    } catch (error) {
+      logger.error(`Error listing mailboxes: ${(error as Error).message}`);
+      return {
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
 }
 
 export default AuthManager;

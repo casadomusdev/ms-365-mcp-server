@@ -74,6 +74,7 @@ The server runs in **Docker** using **STDIO mode** which:
    **User & Authentication:**
    - `User.Read` - Read user profile
    - `User.Read.All` - Read all users' profiles
+   - `User.ReadBasic.All` - Read all other users' profiles
    
    **Mail (Personal Mailbox):**
    - `Mail.Read` - Read mail

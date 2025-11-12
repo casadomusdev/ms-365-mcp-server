@@ -21,6 +21,7 @@ program
   .option('--list-accounts', 'List all cached accounts')
   .option('--select-account <accountId>', 'Select a specific account by ID')
   .option('--remove-account <accountId>', 'Remove a specific account by ID')
+  .option('--list-mailboxes', 'List all accessible mailboxes (personal, delegated, shared)')
   .option('--read-only', 'Start server in read-only mode, disabling write operations')
   .option(
     '--http [port]',
@@ -49,6 +50,7 @@ export interface CommandOptions {
   listAccounts?: boolean;
   selectAccount?: string;
   removeAccount?: string;
+  listMailboxes?: boolean;
   readOnly?: boolean;
   http?: string | boolean;
   enableAuthTools?: boolean;

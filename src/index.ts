@@ -76,6 +76,12 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
+    if (args.listMailboxes) {
+      const result = await authManager.listMailboxes();
+      console.log(JSON.stringify(result));
+      process.exit(0);
+    }
+
     const server = new MicrosoftGraphServer(authManager, args);
     await server.initialize(version);
     await server.start();
