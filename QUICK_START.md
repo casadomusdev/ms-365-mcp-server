@@ -268,12 +268,62 @@ docker compose logs -f
 - ✅ Consistent across machines
 - ✅ Easy management (start/stop/restart)
 - ✅ No Node.js version conflicts
+- ✅ No port exposure needed
 
 **Cons:**
 - ⚠️ Requires Docker installed
 - ⚠️ Slightly slower startup
 
 **Usage:**
+
+**For Claude Desktop Integration (or any local MCP client):**
+
+This is the recommended setup for using the Dockerized MCP server with Claude Desktop or other MCP clients running on your local machine.
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env with your Azure AD credentials:
+#   MS365_MCP_CLIENT_ID - Your Azure AD App Client ID
+#   MS365_MCP_TENANT_ID - Your tenant ID or 'common'
+
+# 2. Start the Docker container
+./start.sh --docker
+
+# 3. Authenticate (one-time setup)
+./auth-login.sh
+# Follow the prompts:
+# - Choose token storage (file-based recommended for Docker)
+# - Visit the URL shown
+# - Enter the device code
+# - Sign in with your Microsoft 365 account
+
+# 4. Verify authentication
+./auth-verify.sh
+
+# 5. Configure Claude Desktop (Settings > Developer)
+# Use absolute path to docker-mcp-wrapper.sh
+{
+  "mcpServers": {
+    "ms365": {
+      "command": "/absolute/path/to/ms-365-mcp-server/docker-mcp-wrapper.sh",
+      "args": ["--org-mode"]
+    }
+  }
+}
+
+# 6. Restart Claude Desktop to load the MCP server
+```
+
+**What the wrapper does:**
+- Automatically starts the Docker container if not running
+- Bridges STDIO communication between Claude and the container
+- No manual `docker compose up` needed - fully automated
+- Passes arguments like `--org-mode` to the MCP server
+
+**Note:** Replace `/absolute/path/to/ms-365-mcp-server/` with the actual path, e.g., `/Users/rob/dev/projects/ms-365-mcp-server/`
+
+**For Manual/Development Use:**
 ```bash
 ./start.sh --docker
 
@@ -282,6 +332,12 @@ docker compose logs -f    # View logs
 docker compose down       # Stop
 docker compose restart    # Restart
 ```
+
+**How Docker Integration Works:**
+- The `docker-mcp-wrapper.sh` script bridges STDIO communication
+- Automatically starts the container if not running
+- No network ports need to be exposed
+- Complete container isolation with secure communication
 
 ### Local Mode
 

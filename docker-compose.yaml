@@ -8,6 +8,9 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     
+    # No ports exposed - access via docker exec for STDIO communication
+    # See docker-mcp-wrapper.sh for Claude Desktop integration
+    
     # Load all configuration from .env file
     env_file: .env
     

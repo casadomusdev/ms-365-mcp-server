@@ -177,37 +177,38 @@ npm run build
 
 **Note:** Run `npm run build` after code changes to update `dist/`.
 
-#### Docker Mode (HTTP Transport)
+#### Docker Mode (STDIO Wrapper)
 
-When using Docker, the MCP server needs to expose an HTTP port for Claude to communicate:
+When using Docker, use the provided wrapper script that bridges STDIO communication to the containerized MCP server:
 
 ```bash
-# Start with HTTP mode (exposes port 3000)
-./start.sh --docker
-# Then run: docker compose up with port mapping
+# 1. Ensure Docker container is configured (will auto-start if needed)
+cp .env.example .env
+# Edit .env with your configuration
+
+# 2. Make wrapper executable (if not already)
+chmod +x docker-mcp-wrapper.sh
 ```
 
-Update `docker-compose.yaml` to expose port:
-```yaml
-services:
-  ms365-mcp:
-    ports:
-      - "127.0.0.1:3000:3000"  # Only localhost access
-```
-
-Configure Claude Desktop for HTTP:
+Configure Claude Desktop:
 ```json
 {
   "mcpServers": {
     "ms365": {
-      "command": "node",
-      "args": ["-e", "require('child_process').exec('curl http://localhost:3000/mcp')"]
+      "command": "/absolute/path/to/ms-365-mcp-server/docker-mcp-wrapper.sh",
+      "args": ["--org-mode"]
     }
   }
 }
 ```
 
-**Security Note:** In development, exposing ports to localhost is safe. In production server environments, **do not expose ports** - use internal Docker networking only. The MCP server should communicate via STDIO or internal Docker networks, not exposed HTTP ports.
+The wrapper script:
+- Automatically starts the Docker container if not running
+- Bridges STDIO communication between Claude and the container
+- No port exposure needed - completely isolated
+- Supports all MCP server arguments (--org-mode, --read-only, etc.)
+
+**Security Note:** This approach provides complete container isolation with no network ports exposed, making it suitable for both development and production use.
 
 ### Production / NPM Package
 
@@ -237,14 +238,13 @@ claude mcp add ms365 -- npx -y @softeria/ms-365-mcp-server --org-mode
 | Mode | Use Case | Security | Performance |
 |------|----------|----------|-------------|
 | **Local Mode** | Development, latest code | ✅ No network exposure | ✅ Fastest |
-| **Docker + HTTP (localhost)** | Dev with isolation | ⚠️ Localhost only | ✅ Good |
-| **Docker + STDIO** | Production servers | ✅ No ports exposed | ✅ Secure |
+| **Docker + STDIO Wrapper** | Isolated execution | ✅ No ports exposed | ✅ Excellent |
 | **NPM Package** | Stable releases | ✅ No network exposure | ✅ Good |
 
 **Recommendation:** 
-- Development: Local mode or Docker with localhost port
-- Production servers: Docker with STDIO (no ports exposed)
-- End users: NPM package via npx
+- Development: Local mode for fastest iteration
+- Docker preference: Docker STDIO wrapper for complete isolation
+- End users: NPM package via npx for easiest setup
 
 ### Authentication
 

@@ -499,6 +499,243 @@ docker compose logs --since 7d | grep -i refresh
 
 **Before Production Use**: Test the complete authentication and refresh cycle
 
+## Container-to-Container Communication
+
+If you have an MCP client application (like a custom AI assistant or automation tool) running in a separate Docker container on the same server, you can connect them via a shared Docker network.
+
+### Scenario: MCP Client Container → MS365 MCP Server Container
+
+**Example Use Case**: An AI assistant container needs to access Microsoft 365 tools via the MCP server.
+
+### Setup Steps
+
+#### 1. Create a Shared Docker Network
+
+```bash
+# Create an external network that both containers can join
+docker network create mcp-shared-network
+```
+
+#### 2. Configure MS365 MCP Server to Use Shared Network
+
+Update `docker-compose.yaml` to connect to the external network:
+
+```yaml
+services:
+  ms365-mcp:
+    container_name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-server
+    networks:
+      - ms365-mcp-net      # Internal network (existing)
+      - mcp-shared-network # External shared network (new)
+    # ... rest of configuration ...
+
+volumes:
+  token-cache:
+    driver: local
+    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-token-cache
+
+networks:
+  ms365-mcp-net:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-net
+  
+  # Add external network reference
+  mcp-shared-network:
+    external: true
+    name: mcp-shared-network
+```
+
+Apply the changes:
+```bash
+docker compose down
+docker compose up -d
+```
+
+#### 3. Configure MCP Client Container
+
+Your MCP client container needs to:
+- Join the same `mcp-shared-network`
+- Use `docker exec` to communicate with the MS365 MCP server via STDIO
+
+**Example client `docker-compose.yaml`:**
+
+```yaml
+services:
+  mcp-client:
+    container_name: my-mcp-client
+    image: my-client-image:latest
+    networks:
+      - mcp-shared-network
+    environment:
+      # Configure how to reach the MS365 MCP server
+      MS365_MCP_CONTAINER: ms365-mcp-server
+    # ... rest of configuration ...
+
+networks:
+  mcp-shared-network:
+    external: true
+    name: mcp-shared-network
+```
+
+#### 4. Client Communication Pattern
+
+From within the client container, communicate with the MCP server using `docker exec`:
+
+```bash
+# Example: Send MCP protocol message from client container to MS365 MCP server
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | \
+  docker exec -i ms365-mcp-server node /app/dist/index.js
+```
+
+**In application code (e.g., Python):**
+
+```python
+import subprocess
+import json
+
+def call_mcp_tool(method, params):
+    """Call MS365 MCP server tool from client container."""
+    mcp_request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params
+    }
+    
+    # Execute docker exec to communicate with MCP server
+    process = subprocess.Popen(
+        ["docker", "exec", "-i", "ms365-mcp-server", 
+         "node", "/app/dist/index.js"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    
+    stdout, stderr = process.communicate(
+        input=json.dumps(mcp_request).encode()
+    )
+    
+    return json.loads(stdout.decode())
+
+# Example usage
+response = call_mcp_tool("tools/list", {})
+print(response)
+```
+
+#### 5. Security Considerations
+
+**Docker Socket Access**: The client container needs access to the Docker socket to run `docker exec`:
+
+```yaml
+services:
+  mcp-client:
+    # ... other config ...
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: root  # Required for Docker socket access
+```
+
+⚠️ **Security Warning**: Mounting the Docker socket gives the container full control over Docker. Only do this:
+- In trusted environments
+- With containers you control
+- When necessary for the architecture
+
+**Alternative: Use a Sidecar Pattern**
+
+For better security, you could create a lightweight sidecar container that handles MCP communication:
+
+```yaml
+services:
+  ms365-mcp:
+    container_name: ms365-mcp-server
+    # ... existing config ...
+
+  mcp-proxy:
+    container_name: mcp-proxy
+    image: alpine:latest
+    command: sh -c "while true; do sleep 3600; done"
+    networks:
+      - mcp-shared-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # This sidecar has Docker socket access
+    # Your client calls this proxy instead
+
+  mcp-client:
+    container_name: my-mcp-client
+    networks:
+      - mcp-shared-network
+    # Client has NO Docker socket access
+    # Sends requests to mcp-proxy over network
+```
+
+### Network Architecture Diagram
+
+```
+┌─────────────────────────────────────────────┐
+│  Server (Docker Host)                       │
+│                                             │
+│  ┌──────────────────────────────────────┐  │
+│  │  mcp-shared-network (bridge)         │  │
+│  │                                       │  │
+│  │  ┌──────────────────────────────┐    │  │
+│  │  │ ms365-mcp-server             │    │  │
+│  │  │ - Authenticates with MS365   │    │  │
+│  │  │ - Stores tokens in volume    │    │  │
+│  │  │ - Exposes MCP via STDIO      │    │  │
+│  │  └──────────────────────────────┘    │  │
+│  │           ▲                           │  │
+│  │           │ docker exec -i            │  │
+│  │           │ (STDIO communication)     │  │
+│  │           │                           │  │
+│  │  ┌────────┴──────────────────────┐   │  │
+│  │  │ mcp-client                    │   │  │
+│  │  │ - Your AI assistant/app       │   │  │
+│  │  │ - Calls MCP tools via exec    │   │  │
+│  │  │ - Processes responses         │   │  │
+│  │  └───────────────────────────────┘   │  │
+│  └──────────────────────────────────────┘  │
+│                                             │
+│  Outbound Internet Access:                 │
+│  → login.microsoftonline.com               │
+│  → graph.microsoft.com                     │
+└─────────────────────────────────────────────┘
+```
+
+### Testing Container-to-Container Communication
+
+```bash
+# 1. Verify both containers are on the shared network
+docker network inspect mcp-shared-network
+
+# Should show both containers in the "Containers" section
+
+# 2. Test from client container
+docker exec -it my-mcp-client sh
+
+# Inside client container:
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | \
+  docker exec -i ms365-mcp-server node /app/dist/index.js
+
+# Should receive MCP protocol response
+```
+
+### Benefits of Container-to-Container Setup
+
+- ✅ **Complete Isolation**: Both services isolated in containers
+- ✅ **No Port Exposure**: Pure STDIO communication, no network ports
+- ✅ **Shared Network**: Containers can discover each other by name
+- ✅ **Scalable**: Easy to add more MCP servers or clients
+- ✅ **Maintainable**: Each service has its own lifecycle
+
+### Limitations
+
+- ⚠️ **Docker Socket Required**: Client needs Docker socket access for `docker exec`
+- ⚠️ **Same Host Only**: Both containers must be on the same Docker host
+- ⚠️ **Not for Kubernetes**: This pattern is Docker Compose specific
+
+For distributed deployments across multiple hosts, consider using HTTP transport instead of STDIO.
+
 ## Summary
 
 You now have a Microsoft 365 MCP Server running in Docker that:
@@ -509,6 +746,7 @@ You now have a Microsoft 365 MCP Server running in Docker that:
 - ✅ Starts automatically via Docker Compose restart policy
 - ✅ Persists tokens in a Docker volume
 - ✅ Works with Microsoft 365 Business accounts via custom Azure AD app
+- ✅ Can communicate with other containers via shared Docker networks
 
 The server will continue to function as long as:
 1. The container has outbound internet access to Microsoft endpoints
