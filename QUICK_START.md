@@ -69,6 +69,22 @@ Start the MCP server with automatic setup.
 - Detects Docker availability
 - Builds/starts server automatically
 - Smart rebuilding (only when needed)
+- **Handles restarts** (detects if already running)
+
+#### `./stop.sh [options]`
+Stop the MCP server (Docker or local).
+
+**Options:**
+```bash
+./stop.sh               # Graceful stop
+./stop.sh --force       # Force stop (docker down / kill -9)
+```
+
+**What it does:**
+- Tries Docker first (docker compose stop)
+- Falls back to local Node.js process if no Docker
+- Graceful shutdown by default
+- Force mode: removes containers (Docker) or kills process (local)
 
 ### Authentication
 
@@ -236,8 +252,9 @@ scp tokens-*.tar.gz user@machine-b:/path/
 # View logs (Docker mode)
 docker compose logs -f
 
-# Stop server (Docker mode)
-docker compose down
+# Stop server
+./stop.sh           # Graceful stop
+./stop.sh --force   # Force stop & remove containers
 ```
 
 ---

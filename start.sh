@@ -162,42 +162,54 @@ if [ "$RUN_MODE" = "docker" ]; then
     COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-ms365-mcp}
     IMAGE_NAME="${COMPOSE_PROJECT}-ms365-mcp"
     
-    # Check if image exists
-    IMAGE_EXISTS=$(docker images -q "$IMAGE_NAME" 2>/dev/null)
+    # Check if containers are already running
+    RUNNING=$(docker compose ps --format json 2>/dev/null | jq -e '.[0].State == "running"' 2>/dev/null || echo "false")
     
-    if [ -z "$IMAGE_EXISTS" ] || [ "$FORCE_BUILD" = true ]; then
-        if [ "$FORCE_BUILD" = true ]; then
-            echo -e "${YELLOW}Building Docker image (forced rebuild)...${NC}"
+    if [ "$RUNNING" = "true" ]; then
+        echo -e "${YELLOW}⚠  Containers already running${NC}"
+        echo ""
+        echo "Restarting containers..."
+        docker compose restart
+        echo ""
+        echo -e "${GREEN}✓ Containers restarted${NC}"
+    else
+        # Check if image exists
+        IMAGE_EXISTS=$(docker images -q "$IMAGE_NAME" 2>/dev/null)
+        
+        if [ -z "$IMAGE_EXISTS" ] || [ "$FORCE_BUILD" = true ]; then
+            if [ "$FORCE_BUILD" = true ]; then
+                echo -e "${YELLOW}Building Docker image (forced rebuild)...${NC}"
+            else
+                echo -e "${YELLOW}Building Docker image (first time)...${NC}"
+            fi
+            echo "This may take a few minutes..."
+            echo ""
+            
+            if docker compose build; then
+                echo ""
+                echo -e "${GREEN}✓ Docker image built successfully${NC}"
+            else
+                echo ""
+                echo -e "${RED}✗ Docker build failed${NC}"
+                exit 1
+            fi
         else
-            echo -e "${YELLOW}Building Docker image (first time)...${NC}"
+            echo -e "${GREEN}✓ Docker image exists ($IMAGE_NAME)${NC}"
         fi
-        echo "This may take a few minutes..."
+        
+        # Start containers (docker compose up -d handles both start and restart)
+        echo ""
+        echo -e "${YELLOW}Starting containers...${NC}"
         echo ""
         
-        if docker compose build; then
+        if docker compose up -d; then
             echo ""
-            echo -e "${GREEN}✓ Docker image built successfully${NC}"
+            echo -e "${GREEN}✓ Containers started successfully${NC}"
         else
             echo ""
-            echo -e "${RED}✗ Docker build failed${NC}"
+            echo -e "${RED}✗ Failed to start containers${NC}"
             exit 1
         fi
-    else
-        echo -e "${GREEN}✓ Docker image exists ($IMAGE_NAME)${NC}"
-    fi
-    
-    # Start containers
-    echo ""
-    echo -e "${YELLOW}Starting containers...${NC}"
-    echo ""
-    
-    if docker compose up -d; then
-        echo ""
-        echo -e "${GREEN}✓ Containers started successfully${NC}"
-    else
-        echo ""
-        echo -e "${RED}✗ Failed to start containers${NC}"
-        exit 1
     fi
     
     # Wait for initialization
