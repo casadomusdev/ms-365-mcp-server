@@ -151,42 +151,18 @@ Test login in Claude Desktop:
 
 ## Integration
 
-### Claude Desktop
+### Local Development (Recommended)
 
-To add this MCP server to Claude Desktop:
+For development using local project files:
 
-Edit the config file under Settings > Developer:
-
-```json
-{
-  "mcpServers": {
-    "ms365": {
-      "command": "npx",
-      "args": ["-y", "@softeria/ms-365-mcp-server"]
-    }
-  }
-}
-```
-
-### Claude Code CLI
+#### Local Mode (Direct Node.js)
 
 ```bash
-claude mcp add ms365 -- npx -y @softeria/ms-365-mcp-server
+# Build the project first
+npm run build
+
+# Configure Claude Desktop (Settings > Developer)
 ```
-
-For other interfaces that support MCPs, please refer to their respective documentation for the correct
-integration method.
-
-### Local Development
-
-For local development or testing:
-
-```bash
-# From the project directory
-claude mcp add ms -- npx tsx src/index.ts --org-mode
-```
-
-Or configure Claude Desktop manually:
 
 ```json
 {
@@ -199,7 +175,76 @@ Or configure Claude Desktop manually:
 }
 ```
 
-> **Note**: Run `npm run build` after code changes to update the `dist/` folder.
+**Note:** Run `npm run build` after code changes to update `dist/`.
+
+#### Docker Mode (HTTP Transport)
+
+When using Docker, the MCP server needs to expose an HTTP port for Claude to communicate:
+
+```bash
+# Start with HTTP mode (exposes port 3000)
+./start.sh --docker
+# Then run: docker compose up with port mapping
+```
+
+Update `docker-compose.yaml` to expose port:
+```yaml
+services:
+  ms365-mcp:
+    ports:
+      - "127.0.0.1:3000:3000"  # Only localhost access
+```
+
+Configure Claude Desktop for HTTP:
+```json
+{
+  "mcpServers": {
+    "ms365": {
+      "command": "node",
+      "args": ["-e", "require('child_process').exec('curl http://localhost:3000/mcp')"]
+    }
+  }
+}
+```
+
+**Security Note:** In development, exposing ports to localhost is safe. In production server environments, **do not expose ports** - use internal Docker networking only. The MCP server should communicate via STDIO or internal Docker networks, not exposed HTTP ports.
+
+### Production / NPM Package
+
+To use the published NPM package (stable releases only):
+
+#### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "ms365": {
+      "command": "npx",
+      "args": ["-y", "@softeria/ms-365-mcp-server", "--org-mode"]
+    }
+  }
+}
+```
+
+#### Claude Code CLI
+
+```bash
+claude mcp add ms365 -- npx -y @softeria/ms-365-mcp-server --org-mode
+```
+
+### Integration Modes Comparison
+
+| Mode | Use Case | Security | Performance |
+|------|----------|----------|-------------|
+| **Local Mode** | Development, latest code | ✅ No network exposure | ✅ Fastest |
+| **Docker + HTTP (localhost)** | Dev with isolation | ⚠️ Localhost only | ✅ Good |
+| **Docker + STDIO** | Production servers | ✅ No ports exposed | ✅ Secure |
+| **NPM Package** | Stable releases | ✅ No network exposure | ✅ Good |
+
+**Recommendation:** 
+- Development: Local mode or Docker with localhost port
+- Production servers: Docker with STDIO (no ports exposed)
+- End users: NPM package via npx
 
 ### Authentication
 
