@@ -85,12 +85,13 @@ When using client credentials mode, you must configure the following **Applicati
 - **Calendars:** Calendars.Read, Calendars.ReadWrite
 - **Files:** Files.Read.All, Files.ReadWrite.All
 - **User:** User.Read.All
-- **Tasks:** Tasks.Read, Tasks.ReadWrite
+- **Tasks:** Tasks.Read.All, Tasks.ReadWrite.All
 - **Contacts:** Contacts.Read, Contacts.ReadWrite
-- **OneNote:** Notes.Read, Notes.Create
-- **Teams:** Chat.Read, Chat.ReadWrite, Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMessage.Send, TeamMember.Read.All
-- **SharePoint:** Sites.Read.All
-- **People:** People.Read
+- **OneNote:** Notes.Read.All, Notes.ReadWrite.All
+- **Teams:** Chat.Read.All, Chat.ReadWrite.All, Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, TeamMember.Read.All
+- **SharePoint:** Sites.Read.All, Sites.ReadWrite.All
+- **People:** People.Read.All
+- **Organization:** Organization.Read.All
 
 **IMPORTANT:** After adding these permissions, you MUST click "Grant admin consent for [Your Organization]" in the Azure AD portal. Application permissions always require admin consent.
 

@@ -403,36 +403,142 @@ class AuthManager {
       logger.info('Token retrieved successfully, testing Graph API access...');
 
       try {
-        const response = await fetch('https://graph.microsoft.com/v1.0/me', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        // Use different validation endpoints based on authentication mode
+        if (this.isClientCredentialsMode) {
+          // Client credentials (app permissions) - validate tenant-level access
+          const impersonateUser = process.env.MS365_MCP_IMPERSONATE_USER;
+          
+          if (impersonateUser) {
+            // Validate access to the specific user we're impersonating
+            logger.info(`Validating access to impersonated user: ${impersonateUser}`);
+            const response = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(impersonateUser)}`, {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
 
-        if (response.ok) {
-          const userData = await response.json();
-          logger.info('Graph API user data fetch successful');
-          return {
-            success: true,
-            message: 'Login successful',
-            userData: {
-              displayName: userData.displayName,
-              userPrincipalName: userData.userPrincipalName,
-            },
-          };
+            if (response.ok) {
+              const userData = await response.json();
+              logger.info('Graph API user data fetch successful (impersonated user)');
+              return {
+                success: true,
+                message: `Client credentials authentication successful (impersonating ${impersonateUser})`,
+                userData: {
+                  displayName: userData.displayName,
+                  userPrincipalName: userData.userPrincipalName,
+                },
+              };
+            } else {
+              const errorText = await response.text();
+              logger.error(`Graph API user validation failed: ${response.status} - ${errorText}`);
+              return {
+                success: false,
+                message: `Authentication successful but cannot access impersonated user ${impersonateUser}: ${response.status}`,
+              };
+            }
+          } else {
+            // No impersonation - validate tenant-level access and get organization info
+            logger.info('Validating tenant-level access and fetching organization details');
+            
+            try {
+              // Fetch organization details for meaningful tenant information
+              const orgResponse = await fetch('https://graph.microsoft.com/v1.0/organization', {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              });
+
+              if (orgResponse.ok) {
+                const orgData = await orgResponse.json();
+                const org = orgData.value?.[0];
+                
+                if (org) {
+                  logger.info(`Graph API tenant access successful (${org.displayName})`);
+                  
+                  // Get primary verified domain
+                  const primaryDomain = org.verifiedDomains?.find((d: any) => d.isDefault)?.name || 
+                                       org.verifiedDomains?.[0]?.name || 
+                                       'unknown.onmicrosoft.com';
+                  
+                  return {
+                    success: true,
+                    message: 'Client credentials authentication successful (tenant-wide access)',
+                    userData: {
+                      displayName: `${org.displayName} (Tenant)`,
+                      userPrincipalName: `app@${primaryDomain}`,
+                    },
+                  };
+                }
+              }
+              
+              // Fallback: If organization endpoint fails, try users endpoint
+              logger.warn('Organization endpoint failed, falling back to users endpoint');
+            } catch (orgError) {
+              logger.warn(`Organization query failed: ${(orgError as Error).message}, falling back to users endpoint`);
+            }
+            
+            // Fallback validation using users endpoint
+            const response = await fetch('https://graph.microsoft.com/v1.0/users?$top=1', {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
+
+            if (response.ok) {
+              const userData = await response.json();
+              const userCount = userData.value?.length || 0;
+              logger.info(`Graph API tenant access successful (found ${userCount} user(s))`);
+              return {
+                success: true,
+                message: 'Client credentials authentication successful (tenant-wide access)',
+                userData: {
+                  displayName: 'Application (Tenant-wide)',
+                  userPrincipalName: 'app-permissions@tenant',
+                },
+              };
+            } else {
+              const errorText = await response.text();
+              logger.error(`Graph API tenant access failed: ${response.status} - ${errorText}`);
+              return {
+                success: false,
+                message: `Authentication successful but Graph API tenant access failed: ${response.status}`,
+              };
+            }
+          }
         } else {
-          const errorText = await response.text();
-          logger.error(`Graph API user data fetch failed: ${response.status} - ${errorText}`);
-          return {
-            success: false,
-            message: `Login successful but Graph API access failed: ${response.status}`,
-          };
+          // Delegated permissions (device code) - use /me endpoint
+          logger.info('Validating delegated permissions via /me endpoint');
+          const response = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          });
+
+          if (response.ok) {
+            const userData = await response.json();
+            logger.info('Graph API user data fetch successful');
+            return {
+              success: true,
+              message: 'Delegated permissions authentication successful',
+              userData: {
+                displayName: userData.displayName,
+                userPrincipalName: userData.userPrincipalName,
+              },
+            };
+          } else {
+            const errorText = await response.text();
+            logger.error(`Graph API user data fetch failed: ${response.status} - ${errorText}`);
+            return {
+              success: false,
+              message: `Authentication successful but Graph API access failed: ${response.status}`,
+            };
+          }
         }
       } catch (graphError) {
         logger.error(`Error fetching user data: ${(graphError as Error).message}`);
         return {
           success: false,
-          message: `Login successful but Graph API access failed: ${(graphError as Error).message}`,
+          message: `Authentication successful but Graph API access failed: ${(graphError as Error).message}`,
         };
       }
     } catch (error) {
