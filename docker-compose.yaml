@@ -1,3 +1,41 @@
+# ============================================================================
+# MODE SELECTION - STDIO vs HTTP
+# ============================================================================
+# 
+# 1. STDIO MODE (Default - Recommended for local/simple setups)
+#    • Use with docker-mcp-wrapper.sh for Claude Desktop integration
+#    • Use for simple container-to-container via docker exec
+#    • Command: node dist/index.js (default, already set in Dockerfile)
+#    • Security: ✅ Maximum - no network exposure
+#    • Setup: No changes needed - works out of the box
+#
+# 2. HTTP MODE - SHARED NETWORK (Recommended for HTTP - Most Secure)
+#    • MCP client container joins same Docker network as this server
+#    • Client accesses server via: http://ms365-mcp-server:${MCP_HTTP_PORT}
+#    • NO port mapping to host - internal Docker network only
+#    • Security: ✅ Secure - network isolated, no host exposure
+#    • Best for: Multi-container applications, microservices
+#    
+#    To enable HTTP mode on shared network:
+#      a) Uncomment the 'command:' line in the HTTP MODE section below
+#      b) Keep 'ports:' section COMMENTED (no host exposure)
+#      c) Client container must join 'ms365-mcp-net' network or shared network
+#      d) Optionally set MCP_HTTP_PORT in .env (default: 3000)
+#      e) Restart: docker compose down && docker compose up -d
+#
+# 3. HTTP MODE - PORT EXPOSED (Only if external access required)
+#    • Exposes HTTP port to host machine (localhost only)
+#    • Use ONLY for: MCP Inspector, local testing, or external tools
+#    • Security: ⚠️ Lower - port accessible on host (localhost only)
+#    
+#    To enable HTTP mode with port exposure:
+#      a) Uncomment the 'command:' line in the HTTP MODE section below
+#      b) Uncomment the 'ports:' section in the HTTP MODE section below
+#      c) Set MCP_HTTP_PORT in .env if needed (default: 3000)
+#      d) Restart: docker compose down && docker compose up -d
+#
+# ============================================================================
+
 services:
   ms365-mcp:
     container_name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-server
@@ -8,14 +46,22 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     
-    # No ports exposed - access via docker exec for STDIO communication
-    # See docker-mcp-wrapper.sh for Claude Desktop integration
+    # === HTTP MODE CONFIGURATION ===
+    # Uncomment the following line to enable HTTP mode (for both shared network and port exposure):
+    # command: ["node", "dist/index.js", "--http", "${MCP_HTTP_PORT:-3000}"]
+    
+    # === PORT EXPOSURE (Only for Mode 3 - External Access) ===
+    # Uncomment ONLY if you need to expose HTTP to host machine:
+    # ports:
+    #   - "127.0.0.1:${MCP_HTTP_PORT:-3000}:${MCP_HTTP_PORT:-3000}"
     
     # Load all configuration from .env file
     env_file: .env
     
     # Environment variables with fallback defaults
     environment:
+      # HTTP Mode Port (only used when HTTP mode is enabled via command override)
+      MCP_HTTP_PORT: ${MCP_HTTP_PORT:-3000}
       # Docker Compose Project Name
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-ms365-mcp}
       

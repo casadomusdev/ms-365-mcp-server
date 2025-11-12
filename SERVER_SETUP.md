@@ -736,6 +736,277 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 For distributed deployments across multiple hosts, consider using HTTP transport instead of STDIO.
 
+## HTTP Mode for Container-to-Container Communication
+
+An alternative to STDIO + docker exec is to use HTTP mode on a shared Docker network. This approach is more standard and doesn't require Docker socket access.
+
+### When to Use HTTP Mode vs STDIO Mode
+
+**Use HTTP Mode when:**
+- Building microservices architecture with multiple containers
+- Client has native HTTP support (easier than subprocess/docker exec)
+- You want to avoid mounting Docker socket (better security)
+- Client is written in language with good HTTP libraries
+
+**Use STDIO Mode when:**
+- Simplest possible setup
+- Single-host deployment with co-located containers
+- You're comfortable with docker exec pattern
+- Maximum security (no network traffic at all)
+
+### Setup: HTTP Mode on Shared Network
+
+#### 1. Enable HTTP Mode in MS365 MCP Server
+
+Edit `docker-compose.yaml`:
+
+```yaml
+services:
+  ms365-mcp:
+    # Uncomment to enable HTTP mode:
+    command: ["node", "dist/index.js", "--http", "${MCP_HTTP_PORT:-3000}"]
+    
+    # Keep ports commented - no host exposure needed
+    # ports:
+    #   - "127.0.0.1:${MCP_HTTP_PORT:-3000}:${MCP_HTTP_PORT:-3000}"
+```
+
+Restart the server:
+```bash
+docker compose down
+docker compose up -d
+```
+
+#### 2. Configure MCP Client Container
+
+Your client needs to join the same network. Example `docker-compose.yaml` for client:
+
+```yaml
+services:
+  mcp-client:
+    container_name: my-mcp-client
+    image: my-client-image:latest
+    networks:
+      - ms365-mcp-net  # Join the MS365 MCP server's network
+    environment:
+      # Configure HTTP endpoint for MS365 MCP server
+      MS365_MCP_URL: http://ms365-mcp-server:3000
+    # ... rest of configuration ...
+
+networks:
+  ms365-mcp-net:
+    external: true
+    name: ms365-mcp-net  # Must match the MS365 MCP server's network name
+```
+
+#### 3. Client Communication Pattern
+
+**Access the MCP server via HTTP:**
+
+```bash
+# From client container, the server is accessible at:
+# http://ms365-mcp-server:3000
+# (uses container name as hostname on shared network)
+```
+
+**Example client code (Python):**
+
+```python
+import requests
+import json
+
+class MS365MCPClient:
+    """HTTP-based MCP client for MS365 MCP Server."""
+    
+    def __init__(self, base_url="http://ms365-mcp-server:3000"):
+        self.base_url = base_url
+        self.session = requests.Session()
+        
+    def call_tool(self, tool_name, arguments=None):
+        """Call an MCP tool via HTTP."""
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments or {}
+            }
+        }
+        
+        response = self.session.post(
+            f"{self.base_url}/mcp",
+            json=mcp_request,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def list_tools(self):
+        """List all available tools."""
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }
+        
+        response = self.session.post(
+            f"{self.base_url}/mcp",
+            json=mcp_request,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        return response.json()
+
+# Example usage
+client = MS365MCPClient()
+
+# List available tools
+tools = client.list_tools()
+print(f"Available tools: {tools}")
+
+# Call a tool
+result = client.call_tool(
+    "list-mail-messages",
+    {"folder": "inbox", "max_results": 10}
+)
+print(f"Inbox messages: {result}")
+```
+
+**Example client code (Node.js):**
+
+```javascript
+const axios = require('axios');
+
+class MS365MCPClient {
+  constructor(baseUrl = 'http://ms365-mcp-server:3000') {
+    this.baseUrl = baseUrl;
+    this.client = axios.create({
+      baseURL: this.baseUrl,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  async callTool(toolName, arguments = {}) {
+    const mcpRequest = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments
+      }
+    };
+
+    const response = await this.client.post('/mcp', mcpRequest);
+    return response.data;
+  }
+
+  async listTools() {
+    const mcpRequest = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {}
+    };
+
+    const response = await this.client.post('/mcp', mcpRequest);
+    return response.data;
+  }
+}
+
+// Example usage
+(async () => {
+  const client = new MS365MCPClient();
+  
+  // List tools
+  const tools = await client.listTools();
+  console.log('Available tools:', tools);
+  
+  // Call a tool
+  const messages = await client.callTool('list-mail-messages', {
+    folder: 'inbox',
+    max_results: 10
+  });
+  console.log('Inbox messages:', messages);
+})();
+```
+
+### Network Architecture - HTTP Mode
+
+```
+┌─────────────────────────────────────────────┐
+│  Server (Docker Host)                       │
+│                                             │
+│  ┌──────────────────────────────────────┐  │
+│  │  ms365-mcp-net (bridge network)      │  │
+│  │                                       │  │
+│  │  ┌──────────────────────────────┐    │  │
+│  │  │ ms365-mcp-server             │    │  │
+│  │  │ - HTTP server on port 3000   │    │  │
+│  │  │ - Authenticates with MS365   │    │  │
+│  │  │ - Stores tokens in volume    │    │  │
+│  │  └──────────────────────────────┘    │  │
+│  │           ▲                           │  │
+│  │           │ HTTP POST                 │  │
+│  │           │ http://ms365-mcp-server:3000/mcp │
+│  │           │                           │  │
+│  │  ┌────────┴──────────────────────┐   │  │
+│  │  │ mcp-client                    │   │  │
+│  │  │ - Makes HTTP requests         │   │  │
+│  │  │ - Uses standard HTTP client   │   │  │
+│  │  │ - No Docker socket needed     │   │  │
+│  │  └───────────────────────────────┘   │  │
+│  └──────────────────────────────────────┘  │
+│                                             │
+│  Outbound Internet Access:                 │
+│  → login.microsoftonline.com               │
+│  → graph.microsoft.com                     │
+└─────────────────────────────────────────────┘
+```
+
+### Testing HTTP Mode
+
+```bash
+# 1. Verify both containers are on the shared network
+docker network inspect ms365-mcp-net
+# Should show both ms365-mcp-server and mcp-client
+
+# 2. Test HTTP endpoint from client container
+docker exec -it my-mcp-client curl http://ms365-mcp-server:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
+
+# Should receive MCP protocol response
+```
+
+### Comparison: STDIO vs HTTP Mode
+
+| Aspect | STDIO Mode (docker exec) | HTTP Mode (shared network) |
+|--------|-------------------------|---------------------------|
+| **Security** | ✅ No network traffic | ✅ Network isolated (no host exposure) |
+| **Setup** | Docker socket required | No special requirements |
+| **Complexity** | Subprocess management | Standard HTTP client |
+| **Performance** | Faster (no HTTP overhead) | Slightly slower (HTTP) |
+| **Debugging** | Harder (subprocess logs) | Easier (HTTP logs) |
+| **Best for** | Simple setups | Microservices architecture |
+
+### Benefits of HTTP Mode
+
+- ✅ **No Docker Socket**: More secure - no need to mount `/var/run/docker.sock`
+- ✅ **Standard Protocol**: Use any HTTP client library
+- ✅ **Better Debugging**: Can use curl, Postman, browser devtools
+- ✅ **Easier Testing**: Simple to test endpoints manually
+- ✅ **Language Agnostic**: Works with any language that has HTTP support
+- ✅ **Network Isolation**: Still no host exposure when using shared network
+
+### Limitations
+
+- ⚠️ **Same Docker Host**: Both containers must be on same Docker host
+- ⚠️ **HTTP Overhead**: Slightly slower than direct STDIO
+- ⚠️ **Not for Local Desktop**: For local Claude Desktop, use docker-mcp-wrapper.sh (STDIO mode)
+
 ## Summary
 
 You now have a Microsoft 365 MCP Server running in Docker that:

@@ -4,6 +4,7 @@
 #
 # Exports authentication tokens to a timestamped compressed archive.
 # Supports dual-mode operation: Docker or local Node.js
+# Supports both keychain and file-based token storage
 #
 # Usage:
 #   ./auth-export-tokens.sh [output-file]
@@ -29,45 +30,68 @@ echo ""
 # Detect execution mode
 detect_execution_mode
 
+# Create temporary directory for token extraction
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
+
 # Determine token file location based on mode
 if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
-    # Docker mode - tokens are in container volume
+    # Docker mode - tokens are in container volume (always file-based in Docker)
     TOKEN_LOCATION="docker-volume"
-    TEMP_DIR=$(mktemp -d)
     
-    # Copy token file from container to temp location
     echo "Checking for tokens in Docker volume..."
     if docker compose exec ms365-mcp test -f /app/data/.token-cache.json 2>/dev/null; then
+        # Copy token files from container
         docker compose cp ms365-mcp:/app/data/.token-cache.json "$TEMP_DIR/.token-cache.json" 2>/dev/null || true
-    fi
-    
-    TOKEN_FILE="$TEMP_DIR/.token-cache.json"
-else
-    # Direct mode - tokens are in local directory
-    TOKEN_LOCATION="local"
-    if [ -f .token-cache.json ]; then
-        TOKEN_FILE=".token-cache.json"
-    elif [ -f /app/data/.token-cache.json ]; then
-        TOKEN_FILE="/app/data/.token-cache.json"
+        docker compose cp ms365-mcp:/app/data/.selected-account.json "$TEMP_DIR/.selected-account.json" 2>/dev/null || true
+        TOKENS_FOUND=true
     else
-        TOKEN_FILE=".token-cache.json"
+        TOKENS_FOUND=false
+    fi
+else
+    # Local mode - tokens might be in keychain or files
+    TOKEN_LOCATION="local"
+    TOKENS_FOUND=false
+    
+    # First, try to export from keychain using helper script
+    echo "Checking for tokens in system keychain..."
+    if node "$SCRIPT_DIR/scripts/keychain-helper.js" export-from-keychain "$TEMP_DIR" 2>/dev/null; then
+        echo -e "${GREEN}✓ Tokens exported from keychain${NC}"
+        TOKEN_LOCATION="keychain"
+        TOKENS_FOUND=true
+    else
+        # Keychain export failed, try file-based tokens
+        echo "Keychain export failed, checking for file-based tokens..."
+        
+        if [ -f "$SCRIPT_DIR/.token-cache.json" ]; then
+            cp "$SCRIPT_DIR/.token-cache.json" "$TEMP_DIR/.token-cache.json"
+            TOKENS_FOUND=true
+        elif [ -f /app/data/.token-cache.json ]; then
+            cp /app/data/.token-cache.json "$TEMP_DIR/.token-cache.json"
+            TOKENS_FOUND=true
+        fi
+        
+        # Also copy selected account if it exists
+        if [ -f "$SCRIPT_DIR/.selected-account.json" ]; then
+            cp "$SCRIPT_DIR/.selected-account.json" "$TEMP_DIR/.selected-account.json"
+        elif [ -f /app/data/.selected-account.json ]; then
+            cp /app/data/.selected-account.json "$TEMP_DIR/.selected-account.json"
+        fi
+        
+        if [ "$TOKENS_FOUND" = true ]; then
+            TOKEN_LOCATION="file-based"
+        fi
     fi
 fi
 
-# Check if tokens exist
-if [ ! -f "$TOKEN_FILE" ]; then
+# Check if tokens were found
+if [ "$TOKENS_FOUND" = false ] || [ ! -f "$TEMP_DIR/.token-cache.json" ]; then
     echo -e "${RED}✗ No authentication tokens found${NC}"
     echo ""
     echo "You need to authenticate first:"
-    echo "  ./auth-login.sh --force-file-cache"
+    echo "  For keychain storage: ./auth-login.sh"
+    echo "  For file-based storage: ./auth-login.sh --force-file-cache"
     echo ""
-    echo "Note: Token export only works with file-based cache."
-    echo "      System keychain tokens cannot be exported."
-    echo ""
-    
-    # Cleanup temp dir if created
-    [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
-    
     exit 2
 fi
 
@@ -79,6 +103,7 @@ else
     OUTPUT_FILE="tokens-${TIMESTAMP}.tar.gz"
 fi
 
+echo ""
 echo "Exporting tokens..."
 echo "  Source: $TOKEN_LOCATION"
 echo "  Output: $OUTPUT_FILE"
@@ -86,10 +111,14 @@ echo ""
 
 # Create temporary directory for archive contents
 ARCHIVE_DIR=$(mktemp -d)
+trap "rm -rf $ARCHIVE_DIR $TEMP_DIR" EXIT
 mkdir -p "$ARCHIVE_DIR/tokens"
 
-# Copy token file
-cp "$TOKEN_FILE" "$ARCHIVE_DIR/tokens/.token-cache.json"
+# Copy token files
+cp "$TEMP_DIR/.token-cache.json" "$ARCHIVE_DIR/tokens/.token-cache.json"
+if [ -f "$TEMP_DIR/.selected-account.json" ]; then
+    cp "$TEMP_DIR/.selected-account.json" "$ARCHIVE_DIR/tokens/.selected-account.json"
+fi
 
 # Create metadata file
 cat > "$ARCHIVE_DIR/tokens/export-info.txt" << EOF
@@ -99,11 +128,17 @@ MS-365 MCP Server Token Export
 Export Date: $(date '+%Y-%m-%d %H:%M:%S %Z')
 Hostname: $(hostname)
 Export Mode: $TOKEN_LOCATION
+Source: $EXECUTION_MODE
+
+Files Included:
+$(ls -1 "$ARCHIVE_DIR/tokens/" | grep -v "export-info.txt" | sed 's/^/  - /')
 
 Important:
 - Keep this file secure and encrypted
 - Tokens provide access to your Microsoft 365 account
 - Import on target machine with: ./auth-import-tokens.sh $OUTPUT_FILE
+- Use --to-keychain flag to import into keychain
+- Use --to-file flag to import into file-based storage
 EOF
 
 # Create compressed archive
@@ -112,8 +147,6 @@ tar -czf "$SCRIPT_DIR/$OUTPUT_FILE" tokens/
 
 # Cleanup
 cd "$SCRIPT_DIR"
-rm -rf "$ARCHIVE_DIR"
-[ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
 
 # Verify archive was created
 if [ -f "$OUTPUT_FILE" ]; then
@@ -123,6 +156,7 @@ if [ -f "$OUTPUT_FILE" ]; then
     echo "Archive Details:"
     echo "  File: $OUTPUT_FILE"
     echo "  Size: $FILE_SIZE"
+    echo "  Source: $TOKEN_LOCATION"
     echo ""
     echo -e "${YELLOW}⚠  SECURITY WARNING:${NC}"
     echo "  This file contains sensitive authentication tokens."
@@ -130,7 +164,8 @@ if [ -f "$OUTPUT_FILE" ]; then
     echo ""
     echo "To import on another machine:"
     echo "  1. Transfer the file securely (scp, encrypted transfer, etc.)"
-    echo "  2. Run: ./auth-import-tokens.sh $OUTPUT_FILE"
+    echo "  2. Import to keychain: ./auth-import-tokens.sh $OUTPUT_FILE --to-keychain"
+    echo "  3. Or import to files: ./auth-import-tokens.sh $OUTPUT_FILE --to-file"
     echo ""
     exit 0
 else

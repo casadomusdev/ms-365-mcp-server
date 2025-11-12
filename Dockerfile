@@ -27,6 +27,8 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     dumb-init \
+    curl \
+    iputils-ping \
     libsecret-1-0 \
     jq && \
     rm -rf /var/lib/apt/lists/*

@@ -547,37 +547,79 @@ You can export authentication tokens from one machine and import them to another
 - Backing up tokens
 - Setting up multiple environments with the same credentials
 - Avoiding repeated device code authentication
+- Moving tokens between keychain and file-based storage
+
+### Token Storage Modes
+
+The server supports two token storage methods:
+
+1. **System Keychain** (default for local/native installations)
+   - Uses macOS Keychain, Windows Credential Manager, or Linux Secret Service
+   - More secure - tokens encrypted by OS
+   - Requires keychain access permissions
+   - Cannot be easily transferred
+
+2. **File-Based Storage** (default for Docker)
+   - Tokens stored in `.token-cache.json` and `.selected-account.json` files
+   - Less secure but portable
+   - Required for Docker containers
+   - Easy to backup/transfer
 
 ### Quick Token Transfer
 
 ```bash
-# On source machine (Machine A)
+# On source machine (Machine A) - auto-detects token location
 ./auth-export-tokens.sh
 # Creates: tokens-20231211-143022.tar.gz
 
 # Transfer securely to Machine B
 scp tokens-*.tar.gz user@machine-b:/path/
 
-# On destination machine (Machine B)
-./auth-import-tokens.sh tokens-20231211-143022.tar.gz
+# On destination machine (Machine B) 
+# Import to keychain (default for local mode)
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz --to-keychain
+
+# OR import to file-based storage
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz --to-file
 ```
 
 ### Detailed Token Export Process
 
-**On the source machine:**
+**Export from ANY storage type** (keychain or file-based):
 
 ```bash
-# Export tokens (creates timestamped .tar.gz archive)
+# Export tokens - automatically detects source (keychain or files)
 ./auth-export-tokens.sh
 # Creates: tokens-YYYYMMDD-HHMMSS.tar.gz
 
 # Or specify custom filename
 ./auth-export-tokens.sh my-backup.tar.gz
 
+# The script will:
+# 1. Check for tokens in system keychain (local mode)
+# 2. Fall back to file-based tokens if keychain is empty
+# 3. In Docker mode, always exports from container volume
+
 # The archive includes:
 # - .token-cache.json (MSAL token cache with access/refresh tokens)
-# - .selected-account.json (currently selected account)
-# - export-info.txt (metadata: date, hostname, export mode)
+# - .selected-account.json (currently selected account, if exists)
+# - export-info.txt (metadata: date, hostname, export mode, source type)
+```
+
+**Export examples:**
+
+```bash
+# Example 1: Export from keychain (local machine)
+./auth-export-tokens.sh
+# Output: "Source: keychain"
+
+# Example 2: Export from file-based storage
+./auth-export-tokens.sh
+# Output: "Source: file-based"
+
+# Example 3: Export from Docker volume
+./auth-export-tokens.sh
+# Output: "Source: docker-volume"
 ```
 
 ### Securing Exported Tokens
@@ -598,47 +640,99 @@ scp tokens-*.tar.gz.gpg user@server:/path/to/
 
 ### Detailed Token Import Process
 
-**On the destination machine:**
+**Import to ANY storage type** (keychain or file-based):
 
 ```bash
-# If tokens are encrypted, decrypt first
-gpg -d tokens-20241111.tar.gz.gpg | tar xzf -
+# Import to keychain (recommended for local installations)
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz --to-keychain
 
-# Import tokens
-./auth-import-tokens.sh ./tokens-backup
+# Import to file-based storage
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz --to-file
+
+# Auto-detect destination (keychain for local, file for Docker)
+./auth-import-tokens.sh tokens-20231211-143022.tar.gz
 
 # Verify authentication works
 ./auth-verify.sh
+```
 
-# Clean up backup files (optional)
-rm -rf tokens-backup
+**Import behavior:**
+
+- **Local mode (no Docker)**:
+  - Default: Imports to keychain (`--to-keychain`)
+  - Optional: Import to files with `--to-file`
+  
+- **Docker mode**:
+  - Always imports to Docker volume (file-based)
+  - Keychain not available in containers
+
+**Import examples:**
+
+```bash
+# Example 1: Import to keychain on local machine
+./auth-import-tokens.sh tokens-backup.tar.gz --to-keychain
+# Output: "Location: keychain"
+
+# Example 2: Import to files on local machine
+./auth-import-tokens.sh tokens-backup.tar.gz --to-file
+# Output: "Location: file-based"
+
+# Example 3: Import to Docker container
+./auth-import-tokens.sh tokens-backup.tar.gz
+# Output: "Location: docker-volume"
+```
+
+### Converting Between Storage Types
+
+You can convert tokens between keychain and file-based storage:
+
+```bash
+# Convert keychain tokens to files (for backup/transfer)
+./auth-export-tokens.sh backup.tar.gz
+./auth-import-tokens.sh backup.tar.gz --to-file
+
+# Convert file-based tokens to keychain (more secure)
+./auth-export-tokens.sh backup.tar.gz
+./auth-import-tokens.sh backup.tar.gz --to-keychain
+
+# This is useful when:
+# - Moving from development (keychain) to Docker (files)
+# - Moving from Docker (files) to production Mac (keychain)
+# - Improving security by moving files to keychain
 ```
 
 ### Manual Token Transfer (Without Scripts)
 
 If you prefer manual control or the scripts don't work:
 
-**Export manually:**
+**Export manually from Docker:**
 
 ```bash
-# From source machine
-docker cp ms365-mcp-server:/app/data/.token-cache.json ./token-cache.json
-docker cp ms365-mcp-server:/app/data/.selected-account.json ./selected-account.json
+# From source machine (Docker)
+docker compose cp ms365-mcp:/app/data/.token-cache.json ./token-cache.json
+docker compose cp ms365-mcp:/app/data/.selected-account.json ./selected-account.json
 
 # Transfer files to destination machine
 scp token-cache.json selected-account.json user@dest-server:/path/to/
 ```
 
-**Import manually:**
+**Export manually from keychain:**
 
 ```bash
-# On destination machine
-# Get container ID
-CONTAINER_ID=$(docker compose ps -q ms365-mcp)
+# From source machine (local with keychain)
+node scripts/keychain-helper.js export-from-keychain ./export-dir
 
-# Copy tokens in
-docker cp token-cache.json $CONTAINER_ID:/app/data/.token-cache.json
-docker cp selected-account.json $CONTAINER_ID:/app/data/.selected-account.json
+# Transfer files to destination machine
+scp export-dir/.token-cache.json export-dir/.selected-account.json user@dest-server:/path/to/
+```
+
+**Import manually to Docker:**
+
+```bash
+# On destination machine (Docker)
+# Copy tokens to container
+docker compose cp /path/to/token-cache.json ms365-mcp:/app/data/.token-cache.json
+docker compose cp /path/to/selected-account.json ms365-mcp:/app/data/.selected-account.json
 
 # Fix permissions
 docker compose exec ms365-mcp chown node:node /app/data/.token-cache.json
@@ -648,26 +742,64 @@ docker compose exec ms365-mcp chown node:node /app/data/.selected-account.json
 ./auth-verify.sh
 ```
 
+**Import manually to keychain:**
+
+```bash
+# On destination machine (local with keychain)
+# Create temp directory with token files
+mkdir -p /tmp/token-import
+cp /path/to/token-cache.json /tmp/token-import/.token-cache.json
+cp /path/to/selected-account.json /tmp/token-import/.selected-account.json
+
+# Import to keychain
+node scripts/keychain-helper.js import-to-keychain /tmp/token-import
+
+# Clean up
+rm -rf /tmp/token-import
+
+# Verify
+./auth-verify.sh
+```
+
 ### Token Storage Location
 
-**In Docker:**
-- Location: `/app/data/`
+**System Keychain (Local mode, default):**
+- macOS: Keychain Access app → "ms-365-mcp-server" entries
+- Windows: Credential Manager → "ms-365-mcp-server"
+- Linux: Secret Service (GNOME Keyring, KWallet, etc.)
+- Files: No visible files, managed by OS
+- Access: Via `keytar` Node.js library
+- Service: `ms-365-mcp-server`
+- Accounts: `msal-token-cache`, `selected-account`
+
+**File-Based Storage (Docker or explicit):**
+- Location in Docker: `/app/data/`
+- Location locally: Project root directory
+- Files: `.token-cache.json`, `.selected-account.json`
 - Volume: Named Docker volume (`ms365-mcp-token-cache`)
 - Controlled by: `TOKEN_CACHE_DIR` environment variable
 
-**Locally (non-Docker):**
-- Location: Project root directory
-- Files: `.token-cache.json`, `.selected-account.json`
+**Environment Variables:**
 
-**Environment Variable:**
-The `TOKEN_CACHE_DIR` environment variable controls where tokens are stored:
 ```bash
+# TOKEN_CACHE_DIR - where to store file-based tokens
 # Default (project root for backward compatibility)
 # Unset or empty = ./
 
 # Docker (set in docker-compose.yaml)
 TOKEN_CACHE_DIR=/app/data
+
+# FORCE_FILE_CACHE - skip keychain, use files
+# Default: not set (uses keychain if available)
+# Set to 'true' or '1' to force file-based storage
+FORCE_FILE_CACHE=true  # Use with ./auth-login.sh --force-file-cache
 ```
+
+**Storage decision logic:**
+
+1. **Docker mode**: Always uses file-based storage (`/app/data/`)
+2. **Local mode with `FORCE_FILE_CACHE=true`**: Uses file-based storage
+3. **Local mode (default)**: Attempts keychain, falls back to files if keychain unavailable
 
 ### Token Transfer Security Considerations
 
@@ -696,14 +828,42 @@ docker compose exec ms365-mcp chown node:node /app/data/.selected-account.json
 
 **Tokens don't work after import:**
 ```bash
-# Verify token files were copied correctly
+# Check storage location
+# For Docker:
 docker compose exec ms365-mcp ls -la /app/data/
 
-# Check if tokens are expired
+# For keychain:
+# macOS: Open Keychain Access, search for "ms-365-mcp-server"
+# Or use the helper:
+node scripts/keychain-helper.js export-from-keychain /tmp/check
+
+# Verify token validity
 ./auth-verify.sh
 
 # If expired, re-authenticate
 ./auth-login.sh
+```
+
+**Import to keychain fails:**
+```bash
+# Common cause: Keychain access denied
+# Solution: Grant access when macOS prompts
+
+# Alternative: Use file-based storage
+./auth-import-tokens.sh tokens-backup.tar.gz --to-file
+```
+
+**Cannot export from keychain:**
+```bash
+# Check if tokens are actually in keychain
+# macOS: Keychain Access → search "ms-365-mcp-server"
+
+# If tokens are in files instead, export works automatically:
+./auth-export-tokens.sh
+# Will find and export file-based tokens
+
+# Force file-based login for easier export:
+./auth-login.sh --force-file-cache
 ```
 
 ---
