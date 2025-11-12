@@ -110,6 +110,35 @@ organization.
 
 Example: `list-shared-mailbox-messages` with `user-id` set to `shared-mailbox@company.com`
 
+## Getting Started
+
+### Quick Start (Docker or Local)
+
+For the fastest setup, use our automated scripts:
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env with your Azure AD credentials
+
+# 2. Start the server (interactive mode selection)
+./start.sh
+
+# 3. Authenticate
+./auth-login.sh
+
+# 4. Verify
+./auth-verify.sh
+```
+
+**See [QUICK_START.md](QUICK_START.md) for complete setup guide with all available scripts.**
+
+For production deployments, see [SERVER_SETUP.md](SERVER_SETUP.md).
+
+### NPM Package Usage
+
+For using as an NPM package in Claude Desktop or other MCP clients, see the [Integration](#integration) section below.
+
 ## Quick Start Example
 
 Test login in Claude Desktop:
