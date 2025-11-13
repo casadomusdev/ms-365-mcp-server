@@ -1,47 +1,60 @@
-# Server Setup Guide - Docker Deployment
+# Server Setup Guide
 
-This guide explains how to deploy the Microsoft 365 MCP Server in Docker with automatic token refresh, without requiring internet exposure.
+This guide covers deploying the MS-365 MCP Server in Docker on a server without internet exposure.
 
 ## Overview
 
-The server runs in **Docker** using **STDIO mode** which:
-- Requires zero internet exposure (no public IP, domain, or open ports)
-- Automatically refreshes access tokens using cached refresh tokens
-- Only needs outbound internet access to Microsoft's endpoints
-- Uses device code authentication (one-time setup)
-- Persists tokens in a Docker volume
-- **Runs in Organization Mode** for full M365 Business feature support
+The server runs in Docker using STDIO mode with automatic token refresh:
+- No inbound internet access required (no public IP, domain, or open ports)
+- Only outbound HTTPS to Microsoft endpoints
+- Client credentials authentication (service account for multi-user support)
+- Optional device code flow for single-user/personal accounts
+- Persistent token storage in Docker volume
+- Automatic token refresh using MSAL
 
-## Organization Mode (Org-Mode)
+## Prerequisites
 
-**CRITICAL for Microsoft 365 Business**: This setup uses **Organization Mode (--org-mode)** which is **REQUIRED** to access:
+**Server:**
+- Docker and Docker Compose installed
+- Outbound HTTPS access to `login.microsoftonline.com` and `graph.microsoft.com`
+- SSH access for initial setup
 
-### Features That Require Org-Mode:
-- ✅ **Shared Mailboxes** - Read and send from shared mailboxes
-- ✅ **Microsoft Teams** - Read/send messages in teams and channels
-- ✅ **SharePoint** - Access SharePoint sites, lists, and documents
-- ✅ **List All Users** - Query organization directory
-- ✅ **Meeting Scheduling** - Find meeting times across calendars
-- ✅ **Organization-wide Search** - Search across all organization content
-
-### What Org-Mode Does:
-- Enables all organization-level scopes (*.All, *.Shared, Teams, SharePoint)
-- Registers these scopes during initial authentication
-- Ensures all advanced M365 Business features are available
-
-**Without org-mode**, you would only have access to personal mailbox, calendar, and files. For Microsoft 365 Business deployments, **org-mode is mandatory**.
+**Microsoft 365:**
+- Microsoft 365 Business account
+- Azure AD admin access for app registration
 
 ## Authentication Modes
 
-The MS-365 MCP Server supports two authentication modes:
+Choose the authentication mode based on your use case:
 
-### Device Code Flow (Default - Delegated Permissions)
+### Client Credentials Flow (Default - Multi-User Support)
+
+**When to use:**
+- Multi-user deployments (server supports multiple users)
+- Automated processes and background services
+- Production deployments with service accounts
+- When you need access to ALL mailboxes/calendars in the tenant
+
+**How it works:**
+- No interactive login required
+- Uses `ConfidentialClientApplication` from MSAL
+- Requires **Application Permissions** in Azure AD
+- Access token represents the application itself
+- Access to ALL resources the app has permission to access
+
+**Configuration:**
+- Set `MS365_MCP_CLIENT_SECRET` in `.env`
+- Set `MS365_MCP_TENANT_ID` to your specific tenant ID (not "common")
+- Use **Application Permissions** in Azure AD (see below)
+- Grant admin consent for all permissions
+
+### Device Code Flow (Optional - Single-User)
 
 **When to use:**
 - Personal Microsoft 365 accounts
+- Single-user deployments (same user every time)
 - When you want access limited to what a specific user can access
 - Development and testing scenarios
-- Single-user deployments
 
 **How it works:**
 - Interactive user login required (one-time setup)
@@ -53,193 +66,187 @@ The MS-365 MCP Server supports two authentication modes:
 **Configuration:**
 - Do NOT set `MS365_MCP_CLIENT_SECRET` in `.env`
 - Run `./auth-login.sh` for initial authentication
-- Tokens are cached and automatically refreshed
+- Use **Delegated Permissions** in Azure AD (see below)
 
-### Client Credentials Flow (Application Permissions)
+## Azure AD App Registration
 
-**When to use:**
-- Automated processes and background services
-- When you need access to ALL mailboxes/calendars in the tenant
-- Server-to-server scenarios without user interaction
-- Production deployments with service accounts
+Microsoft 365 Business requires a custom Azure AD app.
 
-**How it works:**
-- No interactive login required
-- Uses `ConfidentialClientApplication` from MSAL
-- Requires **Application Permissions** in Azure AD (not Delegated)
-- Access token represents the application itself
-- Access to ALL resources the app has permission to access
+### Basic Setup
 
-**Configuration:**
-- Set `MS365_MCP_CLIENT_SECRET` in `.env` file
-- Set `MS365_MCP_TENANT_ID` to your specific tenant ID (not "common")
-- Configure **Application Permissions** in Azure AD (see section below)
-- Grant admin consent for all permissions
-- No interactive login needed - tokens acquired automatically
-
-**Required Application Permissions in Azure AD:**
-
-When using client credentials mode, you must configure the following **Application Permissions** (not Delegated):
-
-- **Mail:** Mail.Read, Mail.ReadWrite, Mail.Send
-- **Calendars:** Calendars.Read, Calendars.ReadWrite
-- **Files:** Files.Read.All, Files.ReadWrite.All
-- **User:** User.Read.All
-- **Tasks:** Tasks.Read.All, Tasks.ReadWrite.All
-- **Contacts:** Contacts.Read, Contacts.ReadWrite
-- **OneNote:** Notes.Read.All, Notes.ReadWrite.All
-- **Teams:** Chat.Read.All, Chat.ReadWrite.All, Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, TeamMember.Read.All
-- **SharePoint:** Sites.Read.All, Sites.ReadWrite.All
-- **People:** People.Read.All
-- **Organization:** Organization.Read.All
-
-**IMPORTANT:** After adding these permissions, you MUST click "Grant admin consent for [Your Organization]" in the Azure AD portal. Application permissions always require admin consent.
-
-## Prerequisites
-
-### Server Requirements
-- Docker and Docker Compose installed
-- Outbound internet access to:
-  - `login.microsoftonline.com` (for authentication & token refresh)
-  - `graph.microsoft.com` (for API calls)
-- SSH access to the server
-
-### Microsoft 365 Business - Azure App Registration
-
-**IMPORTANT**: For Microsoft 365 Business accounts, you **MUST register a custom Azure AD app**. The default public client is not available for organization accounts.
-
-#### Step-by-Step Azure AD App Setup
-
-1. Go to [Azure Portal](https://portal.azure.com)
-2. Navigate to **Azure Active Directory** → **App registrations**
-3. Click **New registration**
-4. Configure the application:
+1. Navigate to [Azure Portal](https://portal.azure.com) → **Azure Active Directory** → **App registrations**
+2. Click **New registration**
+3. Configure:
    - **Name**: `MS365 MCP Server`
-   - **Supported account types**: 
-     - Select **"Accounts in this organizational directory only" (Single tenant)**
-     - **IMPORTANT**: Use single tenant, NOT multitenant
-     - This avoids publisher verification requirements (only applies to multitenant apps)
-   - **Redirect URI**: Leave blank (not needed for device code flow)
-5. Click **Register**
-
-   **Note on Publisher Verification**: Azure requires publisher verification for newly registered multitenant apps. However, since we're creating a **single-tenant app** for your organization only, this requirement does not apply. Your organization's admin can grant consent to apps registered in their own tenant without verification.
-
-6. **Note the following values** (you'll need them):
+   - **Supported account types**: "Accounts in this organizational directory only" (Single tenant)
+   - **Redirect URI**: Leave blank
+4. Click **Register** and note:
    - **Application (client) ID**
    - **Directory (tenant) ID**
 
-7. **Configure API Permissions**:
-   - Click **API permissions** in the left menu
-   - Click **Add a permission**
-   - Select **Microsoft Graph** → **Delegated permissions**
-   
-   **Add ALL of the following permissions** (organized by category):
-   
-   **User & Authentication:**
-   - `User.Read` - Read user profile
-   - `User.Read.All` - Read all users' profiles
-   - `User.ReadBasic.All` - Read all other users' profiles
-   
-   **Mail (Personal Mailbox):**
-   - `Mail.Read` - Read mail
-   - `Mail.ReadWrite` - Read and write mail
-   - `Mail.Send` - Send mail
-   
-   **Mail (Shared Mailboxes):**
-   - `Mail.Read.Shared` - Read shared mailboxes
-   - `Mail.ReadWrite.Shared` - Read and write shared mailboxes
-   - `Mail.Send.Shared` - Send from shared mailboxes
-   
-   **Calendar:**
-   - `Calendars.Read` - Read calendars
-   - `Calendars.ReadWrite` - Read and write calendars
-   - `Calendars.Read.Shared` - Read shared calendars (for meeting scheduling)
-   - `Calendars.ReadWrite.Shared` - Read and write shared calendars (for meeting scheduling)
-   
-   **Files & OneDrive:**
-   - `Files.Read` - Read files
-   - `Files.ReadWrite` - Read and write files
-   - `Files.Read.All` - Read all files (for search)
-   
-   **Tasks & Planning:**
-   - `Tasks.Read` - Read tasks (To Do & Planner)
-   - `Tasks.ReadWrite` - Read and write tasks
-   
-   **Contacts:**
-   - `Contacts.Read` - Read contacts
-   - `Contacts.ReadWrite` - Read and write contacts
-   
-   **OneNote:**
-   - `Notes.Read` - Read OneNote notebooks
-   - `Notes.Create` - Create OneNote pages
-   
-   **Teams & Chat:**
-   - `Chat.Read` - Read chats
-   - `ChatMessage.Read` - Read chat messages
-   - `ChatMessage.Send` - Send chat messages
-   - `Team.ReadBasic.All` - Read basic team information
-   - `Channel.ReadBasic.All` - Read basic channel information
-   - `ChannelMessage.Read.All` - Read channel messages
-   - `ChannelMessage.Send` - Send channel messages
-   - `TeamMember.Read.All` - Read team members
-   
-   **SharePoint:**
-   - `Sites.Read.All` - Read all SharePoint sites
-   
-   **Search:**
-   - `People.Read` - Read people (for search)
-   
-   - Click **Add permissions**
-   - **IMPORTANT - Admin Consent**: Click "Grant admin consent for [Your Organization]"
-     - This is REQUIRED for all organization-level permissions (*.All, Shared, Teams, etc.)
+### Create Client Secret (Required for Client Credentials Flow)
 
-8. **Enable Device Code Flow**:
-   - Click **Authentication** in the left menu
-   - Under **Advanced settings**
-   - Set **Allow public client flows** to **Yes**
-   - Click **Save**
+1. Go to **Certificates & secrets**
+2. Click **New client secret**
+3. Add description: "MS365 MCP Server"
+4. Set expiration (recommend 24 months)
+5. Click **Add**
+6. **IMPORTANT**: Copy the secret value immediately (it won't be shown again)
 
-**You do NOT need a client secret for device code flow.**
+### Configure Permissions
 
-## Installation Steps
+Choose the permission set based on your authentication mode:
 
-### 1. Deploy to Server
+#### Application Permissions (for Client Credentials Flow - Default)
+
+1. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Application permissions**
+2. Add the following permissions:
+
+**Mail:**
+- `Mail.Read`
+- `Mail.ReadWrite`
+- `Mail.Send`
+
+**Calendars:**
+- `Calendars.Read`
+- `Calendars.ReadWrite`
+
+**Files:**
+- `Files.Read.All`
+- `Files.ReadWrite.All`
+
+**User:**
+- `User.Read.All`
+
+**Tasks:**
+- `Tasks.Read.All`
+- `Tasks.ReadWrite.All`
+
+**Contacts:**
+- `Contacts.Read`
+- `Contacts.ReadWrite`
+
+**OneNote:**
+- `Notes.Read.All`
+- `Notes.ReadWrite.All`
+
+**Teams:**
+- `Chat.Read.All`
+- `Chat.ReadWrite.All`
+- `Team.ReadBasic.All`
+- `Channel.ReadBasic.All`
+- `ChannelMessage.Read.All`
+- `TeamMember.Read.All`
+
+**SharePoint:**
+- `Sites.Read.All`
+- `Sites.ReadWrite.All`
+
+**People & Search:**
+- `People.Read.All`
+- `Organization.Read.All`
+
+3. Click **Grant admin consent for [Your Organization]** (REQUIRED for application permissions)
+
+#### Delegated Permissions (for Device Code Flow - Optional)
+
+If using device code flow instead, configure these delegated permissions:
+
+1. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
+2. Add the following permissions:
+
+**Core:**
+- `User.Read`
+- `User.Read.All`
+- `User.ReadBasic.All`
+
+**Mail (Personal & Shared):**
+- `Mail.Read`
+- `Mail.ReadWrite`
+- `Mail.Send`
+- `Mail.Read.Shared`
+- `Mail.ReadWrite.Shared`
+- `Mail.Send.Shared`
+
+**Calendar:**
+- `Calendars.Read`
+- `Calendars.ReadWrite`
+- `Calendars.Read.Shared`
+- `Calendars.ReadWrite.Shared`
+
+**Files:**
+- `Files.Read`
+- `Files.ReadWrite`
+- `Files.Read.All`
+
+**Tasks:**
+- `Tasks.Read`
+- `Tasks.ReadWrite`
+
+**Contacts:**
+- `Contacts.Read`
+- `Contacts.ReadWrite`
+
+**OneNote:**
+- `Notes.Read`
+- `Notes.Create`
+
+**Teams:**
+- `Chat.Read`
+- `ChatMessage.Read`
+- `ChatMessage.Send`
+- `Team.ReadBasic.All`
+- `Channel.ReadBasic.All`
+- `ChannelMessage.Read.All`
+- `ChannelMessage.Send`
+- `TeamMember.Read.All`
+
+**SharePoint:**
+- `Sites.Read.All`
+
+**People:**
+- `People.Read`
+
+3. Click **Grant admin consent for [Your Organization]**
+4. Go to **Authentication** → **Advanced settings**
+5. Set **Allow public client flows** to **Yes**
+6. Click **Save**
+
+## Installation
+
+### 1. Deploy Files to Server
 
 ```bash
-# SSH to your server
 ssh user@your-server
-
-# Create project directory
 sudo mkdir -p /opt/ms-365-mcp-server
 cd /opt/ms-365-mcp-server
 
-# Clone/copy the project files
+# Clone or copy project files
 git clone <your-repo> .
-
-# Or use scp to copy from local:
-# scp -r /path/to/ms-365-mcp-server/* user@server:/opt/ms-365-mcp-server/
+# or: scp -r /local/path/* user@server:/opt/ms-365-mcp-server/
 ```
 
 ### 2. Configure Environment
 
-Create a `.env` file with your Azure AD app details:
+Create `.env` file:
+
+**For Client Credentials Flow (Default - Multi-User):**
 
 ```bash
 cat > .env << 'EOF'
-# Docker Compose Project Name (used for container/network/volume naming)
-COMPOSE_PROJECT_NAME=my-project-ms365-mcp
+# Docker Project Name (used for container/network/volume naming)
+COMPOSE_PROJECT_NAME=ms365-mcp
 
-# Organization Mode (REQUIRED for M365 Business - enables shared mailboxes, Teams, SharePoint)
+# Organization Mode (enables shared mailboxes, Teams, SharePoint)
 MS365_MCP_ORG_MODE=true
 
-# Optional: Log level (debug, info, warn, error)
+# Azure AD Configuration
+MS365_MCP_CLIENT_ID=your-client-id-here
+MS365_MCP_TENANT_ID=your-tenant-id-here
+MS365_MCP_CLIENT_SECRET=your-client-secret-here
+
+# Optional Settings
 MS365_MCP_LOG_LEVEL=info
-
-# Azure AD App Configuration (REQUIRED for M365 Business)
-MS365_MCP_CLIENT_ID=your-application-client-id-here
-MS365_MCP_TENANT_ID=your-directory-tenant-id-here
-
-# Feature toggles for tool groups (optional - all enabled by default in org-mode)
 MS365_MCP_ENABLE_MAIL=true
 MS365_MCP_ENABLE_CALENDAR=true
 MS365_MCP_ENABLE_FILES=true
@@ -249,843 +256,240 @@ MS365_MCP_ENABLE_ONENOTE=true
 MS365_MCP_ENABLE_TASKS=true
 EOF
 
-# Secure the .env file
 chmod 600 .env
 ```
 
-**Replace** `your-application-client-id-here` and `your-directory-tenant-id-here` with the values from your Azure AD app registration.
+Replace:
+- `your-client-id-here` - Application (client) ID from Azure AD
+- `your-tenant-id-here` - Directory (tenant) ID from Azure AD
+- `your-client-secret-here` - Client secret value from Azure AD
 
-**Configuration Notes**:
-- `COMPOSE_PROJECT_NAME`: Names all Docker resources (container, network, volume). Change this to run multiple instances.
-- `MS365_MCP_ORG_MODE`: Enabled by default - REQUIRED for shared mailboxes, Teams, SharePoint.
-- `MS365_MCP_LOG_LEVEL`: Controls logging verbosity. Use `debug` for troubleshooting.
-- Feature toggles: Enable/disable specific M365 service groups as needed.
-
-**Docker Resources Created**:
-- Container: `ms365-mcp-server` (or `${COMPOSE_PROJECT_NAME}-server` if customized)
-- Network: `ms365-mcp-net` (isolated bridge network)
-- Volume: `ms365-mcp-token-cache` (persistent token storage)
-- Logging: `local` driver with automatic log rotation
-
-### 3. Build the Docker Image
+**For Device Code Flow (Optional - Single-User):**
 
 ```bash
-# Build the image
-docker compose build
+cat > .env << 'EOF'
+# Docker Project Name
+COMPOSE_PROJECT_NAME=ms365-mcp
 
-# Verify the image was created
-docker images | grep ms365-mcp
+# Organization Mode
+MS365_MCP_ORG_MODE=true
+
+# Azure AD Configuration (NO CLIENT_SECRET for device code flow)
+MS365_MCP_CLIENT_ID=your-client-id-here
+MS365_MCP_TENANT_ID=your-tenant-id-here
+
+# Optional Settings
+MS365_MCP_LOG_LEVEL=info
+EOF
+
+chmod 600 .env
+```
+
+### 3. Build Docker Image
+
+```bash
+docker compose build
+docker images | grep ms365-mcp  # Verify
 ```
 
 ### 4. Initial Authentication
 
-This is a one-time process to authenticate and cache tokens:
+**For Client Credentials Flow (Default):**
+
+No authentication step required! The service will automatically acquire tokens using the client secret.
 
 ```bash
-# Start the container interactively for authentication
+# Skip to step 5 - just start the service
+docker compose up -d
+```
+
+**For Device Code Flow (Optional):**
+
+```bash
+# Start container interactively for device code authentication
 docker compose run --rm ms365-mcp
 
-# You'll see output like:
-# To sign in, use a web browser to open the page https://microsoft.com/devicelogin
-# and enter the code AB12-CD34 to authenticate.
+# Follow device code instructions:
+# 1. Open https://microsoft.com/devicelogin on any device
+# 2. Enter the displayed code
+# 3. Sign in with your M365 Business account
+# 4. Grant permissions
+
+# Wait for "Device code login successful"
+# Press Ctrl+C to exit
 ```
 
-**Complete Authentication**:
-1. On ANY device (your laptop, phone, etc.), visit the URL shown
-2. Enter the code displayed
-3. Sign in with your Microsoft 365 Business account
-4. Review and grant the requested permissions
-5. Return to the server terminal
-
-**Success Indicators**:
-- You'll see "Device code login successful"
-- The Docker volume `ms365-mcp-token-cache` is created with token data
-- The server is now authenticated
-
-Press `Ctrl+C` to exit the interactive session.
-
-### 5. Start the Service
+### 5. Start Service
 
 ```bash
-# Start the container in detached mode
 docker compose up -d
-
-# Verify it's running
-docker compose ps
+docker compose ps  # Verify running
 ```
 
-The container will now run continuously and automatically restart if it stops.
+## Token Management
 
-### 6. Verify Token Cache
+**How it works:**
+- Tokens stored in Docker volume at `/app/data/`
+- Access tokens refresh automatically when expired
+- No user interaction required after initial setup
+- Refresh tokens valid for ~90 days (with active use)
 
+**Token files:**
 ```bash
-# Check that tokens are cached in the volume
 docker compose exec ms365-mcp ls -lh /app/data/
-
-# View volume details
-docker volume inspect ms365-mcp-token-cache
+# .token-cache.json - Access and refresh tokens
+# .selected-account.json - Current account
 ```
 
-## How Automatic Token Refresh Works
 
-Once authenticated:
+## Management
 
-1. **Token Storage**: The Docker volume `/app/data/` contains:
-   - `.token-cache.json` - Access and refresh tokens
-   - `.selected-account.json` - Currently selected account
-   - Both files are automatically managed by MSAL
-
-2. **Automatic Refresh**: When the server needs to make an API call:
-   - Checks if cached access token is still valid
-   - If expired, automatically uses refresh token to get new access token
-   - Makes outbound HTTPS request to `login.microsoftonline.com/token`
-   - Updates token cache in the volume
-   - Continues with API call
-
-3. **No User Interaction**: All refresh happens automatically in the background
-
-4. **No Internet Exposure**: The server makes outbound requests only - no inbound connections needed
-
-## Docker Management
-
-### Viewing Logs
+### View Logs
 
 ```bash
-# View logs in real-time
-docker compose logs -f
-
-# View logs for specific time period
-docker compose logs --since 1h
-docker compose logs --since "2024-01-15"
-
-# View last 100 lines
-docker compose logs --tail 100
-
-# Search logs for token refresh activity
-docker compose logs | grep -i "token\|refresh\|auth"
+docker compose logs -f                    # Real-time
+docker compose logs --tail 100           # Last 100 lines
+docker compose logs --since 1h           # Last hour
+docker compose logs | grep -i token      # Search tokens
 ```
 
-### Managing the Container
+### Container Operations
 
 ```bash
-# Start the service
-docker compose up -d
-
-# Stop the service
-docker compose stop
-
-# Restart the service
-docker compose restart
-
-# View container status
-docker compose ps
-
-# Execute command in running container
-docker compose exec ms365-mcp sh
-
-# Remove container (keeps volume)
-docker compose down
-
-# Remove container AND volume (DELETES TOKENS!)
-docker compose down -v
+docker compose up -d      # Start
+docker compose stop       # Stop
+docker compose restart    # Restart
+docker compose ps         # Status
+docker compose down       # Remove (keeps volume)
+docker compose down -v    # Remove with volume (DELETES TOKENS)
 ```
 
-### Updating the Application
+### Updates
 
 ```bash
-# Pull latest code
 git pull
-
-# Rebuild and restart
 docker compose down
 docker compose build
 docker compose up -d
-
-# Tokens are preserved in the volume
+# Tokens preserved in volume
 ```
 
-## Security Best Practices
+## Security
 
-### Volume Security
-
-The token cache volume contains sensitive authentication data. Ensure proper protection:
+### Backup Token Volume
 
 ```bash
-# Backup the volume (adjust volume name if COMPOSE_PROJECT_NAME is different)
+# Backup
 docker run --rm -v ms365-mcp-token-cache:/data \
   -v $(pwd):/backup alpine \
-  tar czf /backup/token-cache-backup-$(date +%F).tar.gz -C /data .
+  tar czf /backup/token-backup-$(date +%F).tar.gz -C /data .
 
-# Encrypt the backup
-gpg -c token-cache-backup-*.tar.gz
-
-# Store encrypted backup securely offsite
+# Encrypt
+gpg -c token-backup-*.tar.gz
 ```
 
-### Monitoring
+### Network Verification
 
 ```bash
-# Monitor container health
+# Verify no exposed ports
 docker compose ps
-docker stats ms365-mcp-server
 
-# Check for errors
-docker compose logs | grep -i error
-
-# Monitor token refresh activity
-docker compose logs --since 1h | grep -i "token\|refresh"
-```
-
-### Network Security
-
-```bash
-# Verify no ports are exposed
-docker compose ps
-# Should show no port mappings
-
-# Inspect network configuration
+# Check network isolation
 docker inspect ms365-mcp-server | grep -A 20 NetworkSettings
 ```
 
 ## Troubleshooting
 
-### Tokens Expired After Long Inactivity
+### Expired Tokens
 
-If refresh token expires (typically 90 days of no use):
+If refresh token expires (90+ days inactive):
 
 ```bash
-# Stop and remove container
 docker compose down
-
-# Remove the token volume (adjust volume name if COMPOSE_PROJECT_NAME is different)
 docker volume rm ms365-mcp-token-cache
-
-# Re-run authentication
-docker compose run --rm ms365-mcp
-# Complete device code flow again
-
-# Start the service
+docker compose run --rm ms365-mcp  # Re-authenticate
 docker compose up -d
 ```
 
-### Checking Container Status
+### Check Status
 
 ```bash
-# Is the container running?
-docker compose ps
-
-# View recent logs
-docker compose logs --tail 50
-
-# Check for authentication errors
-docker compose logs | grep -i "auth\|token\|error"
+docker compose ps                                # Running?
+docker compose logs --tail 50                   # Recent logs
+docker compose logs | grep -i "auth\|error"    # Errors
 ```
 
-### Permission Errors
+### Permission Issues
 
 ```bash
-# Check volume permissions
 docker compose exec ms365-mcp ls -la /app/data/
-
-# If needed, fix permissions (run as root)
 docker compose exec -u root ms365-mcp chown -R node:node /app/data
 ```
 
-### Testing Token Refresh
+## Container Communication
 
-```bash
-# Watch logs for token refresh
-docker compose logs -f | grep -i refresh
+For connecting other containers to the MCP server, see the detailed sections in the original document covering:
+- Shared Docker networks
+- STDIO mode with `docker exec`
+- HTTP mode on private networks
+- Security considerations
 
-# Force a token refresh by waiting for access token to expire (1 hour)
-# Or check if automatic refresh is working
-```
+**Quick setup:** Both containers join the same Docker network, then either:
+- Use `docker exec -i ms365-mcp-server node /app/dist/index.js` (STDIO)
+- Use `http://ms365-mcp-server:3000/mcp` (HTTP mode)
 
-### Accessing Token Cache for Backup
+## Maintenance Schedule
 
-```bash
-# Create a temporary container to access volume (adjust volume name if COMPOSE_PROJECT_NAME is different)
-docker run --rm -v ms365-mcp-token-cache:/data alpine ls -lh /data
-
-# Copy token cache to host
-docker run --rm -v ms365-mcp-token-cache:/data \
-  -v $(pwd):/backup alpine \
-  cp /data/.token-cache.json /backup/
-
-# View token cache (careful - contains sensitive data!)
-cat .token-cache.json | jq .
-```
-
-## Production Deployment Checklist
-
-- [ ] Azure AD app registered with correct permissions
-- [ ] Admin consent granted for required API permissions
-- [ ] Environment variables configured in `.env`
-- [ ] `.env` file has restricted permissions (600)
-- [ ] Initial device code authentication completed
-- [ ] Token cache volume created and populated
-- [ ] Container running in detached mode
-- [ ] Logs show successful startup and token acquisition
-- [ ] Token cache backup process configured
-- [ ] Monitoring alerts set up for container health
-- [ ] Documentation updated with your specific Azure AD app details
-
-## Network Requirements
-
-### Outbound Access Required
-- `login.microsoftonline.com` (port 443) - Authentication & token refresh
-- `graph.microsoft.com` (port 443) - API calls
-
-### Inbound Access Required
-- **None** - the server makes outbound requests only
-
-### Docker Network
-- The container uses bridge network mode (default)
-- No port mappings required for STDIO mode
-- No need for host network access
-
-## Maintenance
-
-### Regular Tasks
-
-**Monthly**: Verify the container is running and tokens are refreshing
+**Monthly:**
 ```bash
 docker compose ps
 docker compose logs --since 7d | grep -i refresh
 ```
 
-**Every 60 Days**: Make at least one API call to prevent refresh token expiry
-- The service should do this automatically if actively used
-- Monitor token expiry in logs
+**Every 60 Days:**
+- Ensure at least one API call to keep refresh token active
+- Service does this automatically if in use
 
-**After Server Reboots**: 
-- Container auto-starts with `restart: unless-stopped` policy
+**After Reboots:**
+- Container auto-starts (`restart: unless-stopped` policy)
 - Verify with `docker compose ps`
 
-**Before Production Use**: Test the complete authentication and refresh cycle
-
-## Container-to-Container Communication
-
-If you have an MCP client application (like a custom AI assistant or automation tool) running in a separate Docker container on the same server, you can connect them via a shared Docker network.
-
-### Scenario: MCP Client Container → MS365 MCP Server Container
-
-**Example Use Case**: An AI assistant container needs to access Microsoft 365 tools via the MCP server.
-
-### Setup Steps
-
-#### 1. Create a Shared Docker Network
-
-```bash
-# Create an external network that both containers can join
-docker network create mcp-shared-network
-```
-
-#### 2. Configure MS365 MCP Server to Use Shared Network
-
-Update `docker-compose.yaml` to connect to the external network:
-
-```yaml
-services:
-  ms365-mcp:
-    container_name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-server
-    networks:
-      - ms365-mcp-net      # Internal network (existing)
-      - mcp-shared-network # External shared network (new)
-    # ... rest of configuration ...
-
-volumes:
-  token-cache:
-    driver: local
-    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-token-cache
-
-networks:
-  ms365-mcp-net:
-    driver: bridge
-    name: ${COMPOSE_PROJECT_NAME:-ms365-mcp}-net
-  
-  # Add external network reference
-  mcp-shared-network:
-    external: true
-    name: mcp-shared-network
-```
-
-Apply the changes:
-```bash
-docker compose down
-docker compose up -d
-```
-
-#### 3. Configure MCP Client Container
-
-Your MCP client container needs to:
-- Join the same `mcp-shared-network`
-- Use `docker exec` to communicate with the MS365 MCP server via STDIO
-
-**Example client `docker-compose.yaml`:**
-
-```yaml
-services:
-  mcp-client:
-    container_name: my-mcp-client
-    image: my-client-image:latest
-    networks:
-      - mcp-shared-network
-    environment:
-      # Configure how to reach the MS365 MCP server
-      MS365_MCP_CONTAINER: ms365-mcp-server
-    # ... rest of configuration ...
-
-networks:
-  mcp-shared-network:
-    external: true
-    name: mcp-shared-network
-```
-
-#### 4. Client Communication Pattern
-
-From within the client container, communicate with the MCP server using `docker exec`:
-
-```bash
-# Example: Send MCP protocol message from client container to MS365 MCP server
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | \
-  docker exec -i ms365-mcp-server node /app/dist/index.js
-```
-
-**In application code (e.g., Python):**
-
-```python
-import subprocess
-import json
-
-def call_mcp_tool(method, params):
-    """Call MS365 MCP server tool from client container."""
-    mcp_request = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params
-    }
-    
-    # Execute docker exec to communicate with MCP server
-    process = subprocess.Popen(
-        ["docker", "exec", "-i", "ms365-mcp-server", 
-         "node", "/app/dist/index.js"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    
-    stdout, stderr = process.communicate(
-        input=json.dumps(mcp_request).encode()
-    )
-    
-    return json.loads(stdout.decode())
-
-# Example usage
-response = call_mcp_tool("tools/list", {})
-print(response)
-```
-
-#### 5. Security Considerations
-
-**Docker Socket Access**: The client container needs access to the Docker socket to run `docker exec`:
-
-```yaml
-services:
-  mcp-client:
-    # ... other config ...
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    user: root  # Required for Docker socket access
-```
-
-⚠️ **Security Warning**: Mounting the Docker socket gives the container full control over Docker. Only do this:
-- In trusted environments
-- With containers you control
-- When necessary for the architecture
-
-**Alternative: Use a Sidecar Pattern**
-
-For better security, you could create a lightweight sidecar container that handles MCP communication:
-
-```yaml
-services:
-  ms365-mcp:
-    container_name: ms365-mcp-server
-    # ... existing config ...
-
-  mcp-proxy:
-    container_name: mcp-proxy
-    image: alpine:latest
-    command: sh -c "while true; do sleep 3600; done"
-    networks:
-      - mcp-shared-network
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    # This sidecar has Docker socket access
-    # Your client calls this proxy instead
-
-  mcp-client:
-    container_name: my-mcp-client
-    networks:
-      - mcp-shared-network
-    # Client has NO Docker socket access
-    # Sends requests to mcp-proxy over network
-```
-
-### Network Architecture Diagram
-
-```
-┌─────────────────────────────────────────────┐
-│  Server (Docker Host)                       │
-│                                             │
-│  ┌──────────────────────────────────────┐  │
-│  │  mcp-shared-network (bridge)         │  │
-│  │                                       │  │
-│  │  ┌──────────────────────────────┐    │  │
-│  │  │ ms365-mcp-server             │    │  │
-│  │  │ - Authenticates with MS365   │    │  │
-│  │  │ - Stores tokens in volume    │    │  │
-│  │  │ - Exposes MCP via STDIO      │    │  │
-│  │  └──────────────────────────────┘    │  │
-│  │           ▲                           │  │
-│  │           │ docker exec -i            │  │
-│  │           │ (STDIO communication)     │  │
-│  │           │                           │  │
-│  │  ┌────────┴──────────────────────┐   │  │
-│  │  │ mcp-client                    │   │  │
-│  │  │ - Your AI assistant/app       │   │  │
-│  │  │ - Calls MCP tools via exec    │   │  │
-│  │  │ - Processes responses         │   │  │
-│  │  └───────────────────────────────┘   │  │
-│  └──────────────────────────────────────┘  │
-│                                             │
-│  Outbound Internet Access:                 │
-│  → login.microsoftonline.com               │
-│  → graph.microsoft.com                     │
-└─────────────────────────────────────────────┘
-```
-
-### Testing Container-to-Container Communication
-
-```bash
-# 1. Verify both containers are on the shared network
-docker network inspect mcp-shared-network
-
-# Should show both containers in the "Containers" section
-
-# 2. Test from client container
-docker exec -it my-mcp-client sh
-
-# Inside client container:
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | \
-  docker exec -i ms365-mcp-server node /app/dist/index.js
-
-# Should receive MCP protocol response
-```
-
-### Benefits of Container-to-Container Setup
-
-- ✅ **Complete Isolation**: Both services isolated in containers
-- ✅ **No Port Exposure**: Pure STDIO communication, no network ports
-- ✅ **Shared Network**: Containers can discover each other by name
-- ✅ **Scalable**: Easy to add more MCP servers or clients
-- ✅ **Maintainable**: Each service has its own lifecycle
-
-### Limitations
-
-- ⚠️ **Docker Socket Required**: Client needs Docker socket access for `docker exec`
-- ⚠️ **Same Host Only**: Both containers must be on the same Docker host
-- ⚠️ **Not for Kubernetes**: This pattern is Docker Compose specific
-
-For distributed deployments across multiple hosts, consider using HTTP transport instead of STDIO.
-
-## HTTP Mode for Container-to-Container Communication
-
-An alternative to STDIO + docker exec is to use HTTP mode on a shared Docker network. This approach is more standard and doesn't require Docker socket access.
-
-### When to Use HTTP Mode vs STDIO Mode
-
-**Use HTTP Mode when:**
-- Building microservices architecture with multiple containers
-- Client has native HTTP support (easier than subprocess/docker exec)
-- You want to avoid mounting Docker socket (better security)
-- Client is written in language with good HTTP libraries
-
-**Use STDIO Mode when:**
-- Simplest possible setup
-- Single-host deployment with co-located containers
-- You're comfortable with docker exec pattern
-- Maximum security (no network traffic at all)
-
-### Setup: HTTP Mode on Shared Network
-
-#### 1. Enable HTTP Mode in MS365 MCP Server
-
-Edit `docker-compose.yaml`:
-
-```yaml
-services:
-  ms365-mcp:
-    # Uncomment to enable HTTP mode:
-    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}"]
-    
-    # Keep ports commented - no host exposure needed
-    # ports:
-    #   - "127.0.0.1:${MCP_HTTP_PORT:-3000}:${MCP_HTTP_PORT:-3000}"
-```
-
-Restart the server:
-```bash
-docker compose down
-docker compose up -d
-```
-
-#### 2. Configure MCP Client Container
-
-Your client needs to join the same network. Example `docker-compose.yaml` for client:
-
-```yaml
-services:
-  mcp-client:
-    container_name: my-mcp-client
-    image: my-client-image:latest
-    networks:
-      - ms365-mcp-net  # Join the MS365 MCP server's network
-    environment:
-      # Configure HTTP endpoint for MS365 MCP server
-      MS365_MCP_URL: http://ms365-mcp-server:3000
-    # ... rest of configuration ...
-
-networks:
-  ms365-mcp-net:
-    external: true
-    name: ms365-mcp-net  # Must match the MS365 MCP server's network name
-```
-
-#### 3. Client Communication Pattern
-
-**Access the MCP server via HTTP:**
-
-```bash
-# From client container, the server is accessible at:
-# http://ms365-mcp-server:3000
-# (uses container name as hostname on shared network)
-```
-
-**Example client code (Python):**
-
-```python
-import requests
-import json
-
-class MS365MCPClient:
-    """HTTP-based MCP client for MS365 MCP Server."""
-    
-    def __init__(self, base_url="http://ms365-mcp-server:3000"):
-        self.base_url = base_url
-        self.session = requests.Session()
-        
-    def call_tool(self, tool_name, arguments=None):
-        """Call an MCP tool via HTTP."""
-        mcp_request = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments or {}
-            }
-        }
-        
-        response = self.session.post(
-            f"{self.base_url}/mcp",
-            json=mcp_request,
-            headers={"Content-Type": "application/json"}
-        )
-        response.raise_for_status()
-        return response.json()
-    
-    def list_tools(self):
-        """List all available tools."""
-        mcp_request = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list",
-            "params": {}
-        }
-        
-        response = self.session.post(
-            f"{self.base_url}/mcp",
-            json=mcp_request,
-            headers={"Content-Type": "application/json"}
-        )
-        response.raise_for_status()
-        return response.json()
-
-# Example usage
-client = MS365MCPClient()
-
-# List available tools
-tools = client.list_tools()
-print(f"Available tools: {tools}")
-
-# Call a tool
-result = client.call_tool(
-    "list-mail-messages",
-    {"folder": "inbox", "max_results": 10}
-)
-print(f"Inbox messages: {result}")
-```
-
-**Example client code (Node.js):**
-
-```javascript
-const axios = require('axios');
-
-class MS365MCPClient {
-  constructor(baseUrl = 'http://ms365-mcp-server:3000') {
-    this.baseUrl = baseUrl;
-    this.client = axios.create({
-      baseURL: this.baseUrl,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  async callTool(toolName, arguments = {}) {
-    const mcpRequest = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: {
-        name: toolName,
-        arguments
-      }
-    };
-
-    const response = await this.client.post('/mcp', mcpRequest);
-    return response.data;
-  }
-
-  async listTools() {
-    const mcpRequest = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/list',
-      params: {}
-    };
-
-    const response = await this.client.post('/mcp', mcpRequest);
-    return response.data;
-  }
-}
-
-// Example usage
-(async () => {
-  const client = new MS365MCPClient();
-  
-  // List tools
-  const tools = await client.listTools();
-  console.log('Available tools:', tools);
-  
-  // Call a tool
-  const messages = await client.callTool('list-mail-messages', {
-    folder: 'inbox',
-    max_results: 10
-  });
-  console.log('Inbox messages:', messages);
-})();
-```
-
-### Network Architecture - HTTP Mode
-
-```
-┌─────────────────────────────────────────────┐
-│  Server (Docker Host)                       │
-│                                             │
-│  ┌──────────────────────────────────────┐  │
-│  │  ms365-mcp-net (bridge network)      │  │
-│  │                                       │  │
-│  │  ┌──────────────────────────────┐    │  │
-│  │  │ ms365-mcp-server             │    │  │
-│  │  │ - HTTP server on port 3000   │    │  │
-│  │  │ - Authenticates with MS365   │    │  │
-│  │  │ - Stores tokens in volume    │    │  │
-│  │  └──────────────────────────────┘    │  │
-│  │           ▲                           │  │
-│  │           │ HTTP POST                 │  │
-│  │           │ http://ms365-mcp-server:3000/mcp │
-│  │           │                           │  │
-│  │  ┌────────┴──────────────────────┐   │  │
-│  │  │ mcp-client                    │   │  │
-│  │  │ - Makes HTTP requests         │   │  │
-│  │  │ - Uses standard HTTP client   │   │  │
-│  │  │ - No Docker socket needed     │   │  │
-│  │  └───────────────────────────────┘   │  │
-│  └──────────────────────────────────────┘  │
-│                                             │
-│  Outbound Internet Access:                 │
-│  → login.microsoftonline.com               │
-│  → graph.microsoft.com                     │
-└─────────────────────────────────────────────┘
-```
-
-### Testing HTTP Mode
-
-```bash
-# 1. Verify both containers are on the shared network
-docker network inspect ms365-mcp-net
-# Should show both ms365-mcp-server and mcp-client
-
-# 2. Test HTTP endpoint from client container
-docker exec -it my-mcp-client curl http://ms365-mcp-server:3000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
-
-# Should receive MCP protocol response
-```
-
-### Comparison: STDIO vs HTTP Mode
-
-| Aspect | STDIO Mode (docker exec) | HTTP Mode (shared network) |
-|--------|-------------------------|---------------------------|
-| **Security** | ✅ No network traffic | ✅ Network isolated (no host exposure) |
-| **Setup** | Docker socket required | No special requirements |
-| **Complexity** | Subprocess management | Standard HTTP client |
-| **Performance** | Faster (no HTTP overhead) | Slightly slower (HTTP) |
-| **Debugging** | Harder (subprocess logs) | Easier (HTTP logs) |
-| **Best for** | Simple setups | Microservices architecture |
-
-### Benefits of HTTP Mode
-
-- ✅ **No Docker Socket**: More secure - no need to mount `/var/run/docker.sock`
-- ✅ **Standard Protocol**: Use any HTTP client library
-- ✅ **Better Debugging**: Can use curl, Postman, browser devtools
-- ✅ **Easier Testing**: Simple to test endpoints manually
-- ✅ **Language Agnostic**: Works with any language that has HTTP support
-- ✅ **Network Isolation**: Still no host exposure when using shared network
-
-### Limitations
-
-- ⚠️ **Same Docker Host**: Both containers must be on same Docker host
-- ⚠️ **HTTP Overhead**: Slightly slower than direct STDIO
-- ⚠️ **Not for Local Desktop**: For local Claude Desktop, use docker-mcp-wrapper.sh (STDIO mode)
+## Production Checklist
+
+- [ ] Azure AD app registered with correct permissions (Application or Delegated based on auth mode)
+- [ ] Client secret created (for client credentials flow)
+- [ ] Admin consent granted for all permissions
+- [ ] Environment variables configured in `.env`
+- [ ] `.env` file permissions set to 600
+- [ ] Initial authentication completed (device code if using that flow)
+- [ ] Container running in detached mode
+- [ ] Logs show successful startup and token acquisition
+- [ ] Token cache backup configured
+- [ ] Monitoring alerts configured
+
+## Network Requirements
+
+**Outbound (Required):**
+- `login.microsoftonline.com:443` - Authentication & token refresh
+- `graph.microsoft.com:443` - API calls
+
+**Inbound (None):**
+- No inbound access required
+- Server makes outbound requests only
 
 ## Summary
 
-You now have a Microsoft 365 MCP Server running in Docker that:
-- ✅ Runs securely without internet exposure
+Your MS-365 MCP Server now:
+- ✅ Runs without internet exposure
 - ✅ Automatically refreshes access tokens
-- ✅ Requires authentication only once (until refresh token expires)
+- ✅ Requires authentication only once (until refresh expires)
 - ✅ Operates in STDIO mode for maximum security
-- ✅ Starts automatically via Docker Compose restart policy
-- ✅ Persists tokens in a Docker volume
-- ✅ Works with Microsoft 365 Business accounts via custom Azure AD app
-- ✅ Can communicate with other containers via shared Docker networks
+- ✅ Auto-starts via Docker Compose
+- ✅ Persists tokens in Docker volume
+- ✅ Works with M365 Business via custom Azure AD app
 
-The server will continue to function as long as:
-1. The container has outbound internet access to Microsoft endpoints
-2. The Docker volume persists (use named volumes, not anonymous)
-3. The refresh token hasn't expired (keep it active with regular API calls)
-4. Your Azure AD app permissions remain granted
+**Critical success factors:**
+1. Outbound internet to Microsoft endpoints
+2. Docker volume persistence (named volumes)
+3. Active refresh token (regular API calls)
+4. Azure AD app permissions maintained
