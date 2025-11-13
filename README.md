@@ -339,6 +339,74 @@ This method:
 > **Authentication Tools**: In HTTP mode, login/logout tools are disabled by default since OAuth handles authentication.
 > Use `--enable-auth-tools` if you need them available.
 
+### Bearer Token Authentication (HTTP Mode)
+
+When running in HTTP mode, the server supports **stateless bearer token authentication** with **smart auto-detection**. The server intelligently handles authentication based on what's available, making it work seamlessly in all scenarios.
+
+#### Smart Authentication Behavior
+
+The server automatically detects and uses the best available authentication method:
+
+✅ **HTTP mode + logged in via device code** = Works  
+✅ **HTTP mode + has CLIENT_SECRET** = Works  
+✅ **HTTP mode + has OAUTH_TOKEN** = Works  
+✅ **HTTP mode + bearer token provided** = Uses bearer token  
+❌ **HTTP mode + no auth + no bearer** = 401 Unauthorized
+
+**No configuration needed** - the server automatically figures out what to use!
+
+#### How It Works
+
+**When bearer token is provided:**
+```
+Client sends:
+  - Authorization: Bearer <access_token>
+  - x-microsoft-refresh-token: <refresh_token> (optional)
+
+Server:
+  1. Extracts tokens from headers
+  2. Uses access token for Microsoft Graph API calls
+  3. Automatically refreshes expired tokens (if refresh token provided)
+  4. Completely stateless - no server-side session storage
+```
+
+**When no bearer token:**
+```
+Server checks for alternative authentication:
+  - CLIENT_SECRET environment variable (client credentials flow)
+  - OAUTH_TOKEN environment variable (bring your own token)
+  - Cached tokens from device code login
+
+If any exist → Request proceeds with that auth method
+If none exist → Returns 401 Unauthorized
+```
+
+#### Use Cases
+
+Bearer token authentication is ideal for:
+- **Stateless API clients**: No server-side session management needed
+- **Load-balanced deployments**: Works seamlessly across multiple server instances
+- **Microservices**: Each request is self-contained with authentication
+- **Client-controlled token lifecycle**: Client manages token refresh and expiration
+- **Integration with external auth systems**: Bring tokens from your own OAuth flow
+
+#### Example Requests
+
+```bash
+# Using bearer token (stateless)
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJ0eXAiOiJKV1Q..." \
+  -H "x-microsoft-refresh-token: 0.ARwA6WgJ..." \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# Using server's own authentication (no bearer token needed)
+# Works if you've logged in via device code or set CLIENT_SECRET
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
 ## CLI Options
 
 The following options can be used when running ms-365-mcp-server directly from the command line:

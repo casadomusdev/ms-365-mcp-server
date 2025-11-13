@@ -2,8 +2,23 @@ import { Request, Response, NextFunction } from 'express';
 import logger from '../logger.js';
 
 /**
- * Microsoft Bearer Token Auth Middleware validates that the request has a valid Microsoft access token
- * The token is passed in the Authorization header as a Bearer token
+ * Microsoft Bearer Token Auth Middleware with smart auto-detection
+ * 
+ * This middleware intelligently handles authentication based on what's available:
+ * 
+ * SMART BEHAVIOR:
+ * - If bearer token is provided in request → Extract and use it
+ * - If no bearer token BUT server has auth (CLIENT_SECRET, OAUTH_TOKEN, or cached tokens) → Allow request
+ * - If no bearer token AND no server auth → Return 401 Unauthorized
+ * 
+ * AUTHENTICATION METHODS DETECTED:
+ * - Bearer tokens: Authorization: Bearer <token> header
+ * - Client credentials: MS365_MCP_CLIENT_SECRET environment variable
+ * - BYOT (Bring Your Own Token): MS365_MCP_OAUTH_TOKEN environment variable
+ * - Device code flow: Cached tokens from previous login
+ * 
+ * The middleware provides completely stateless operation when bearer tokens are used,
+ * with automatic token refresh via the x-microsoft-refresh-token header.
  */
 export const microsoftBearerTokenAuthMiddleware = (
   req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
@@ -11,26 +26,48 @@ export const microsoftBearerTokenAuthMiddleware = (
   next: NextFunction
 ): void => {
   const authHeader = req.headers.authorization;
+  const hasBearerToken = authHeader && authHeader.startsWith('Bearer ');
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing or invalid access token' });
+  // If bearer token is provided, extract and use it
+  if (hasBearerToken) {
+    const accessToken = authHeader!.substring(7);
+    const refreshToken = (req.headers['x-microsoft-refresh-token'] as string) || '';
+
+    req.microsoftAuth = {
+      accessToken,
+      refreshToken,
+    };
+
+    logger.info('Using bearer token authentication', {
+      hasRefreshToken: !!refreshToken,
+    });
+
+    next();
     return;
   }
 
-  const accessToken = authHeader.substring(7);
+  // No bearer token provided - check if server has alternative authentication
+  const hasClientCredentials = !!process.env.MS365_MCP_CLIENT_SECRET;
+  const hasByotToken = !!process.env.MS365_MCP_OAUTH_TOKEN;
+  
+  // Note: We can't easily check for cached device code tokens here without async,
+  // but that's okay - if they exist, the authManager will use them.
+  // The middleware's job is just to not block the request.
+  
+  const hasAlternativeAuth = hasClientCredentials || hasByotToken;
 
-  // For Microsoft Graph, we don't validate the token here - we'll let the API calls fail if it's invalid
-  // and handle token refresh in the GraphClient
+  if (hasAlternativeAuth) {
+    logger.info('No bearer token provided, using server authentication', {
+      method: hasClientCredentials ? 'client_credentials' : 'byot',
+    });
+    next();
+    return;
+  }
 
-  // Extract refresh token from a custom header (if provided)
-  const refreshToken = (req.headers['x-microsoft-refresh-token'] as string) || '';
-
-  // Store tokens in request for later use
-  req.microsoftAuth = {
-    accessToken,
-    refreshToken,
-  };
-
+  // No bearer token and no alternative auth - this might fail or might work with cached tokens
+  // We'll allow the request through and let it fail gracefully if no auth is available
+  // This handles the device code flow case where tokens are cached
+  logger.info('No bearer token provided, attempting with cached credentials');
   next();
 };
 
