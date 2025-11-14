@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { getToolDescription } from './tool-descriptions.js';
+import { ImpersonationContext, MailboxDiscoveryCache, AccessValidator } from './impersonation/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,6 +109,56 @@ export function registerGraphTools(
   enabledToolsPattern?: string,
   orgMode: boolean = false
 ): void {
+  const stripHtml = (html: string): string =>
+    String(html ?? '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+\n/g, '\n')
+      .trim();
+
+  const scrubBodies = (
+    json: any,
+    includeBody: boolean,
+    bodyFormat?: 'html' | 'text',
+    previewCap: number = 800
+  ): void => {
+    if (!json || typeof json !== 'object') return;
+
+    const processOne = (item: any) => {
+      if (!item || typeof item !== 'object') return;
+      const hasBody = item.body && typeof item.body === 'object';
+      if (!hasBody) return;
+
+      // Ensure bodyPreview exists and is short/plain by default
+      const original =
+        typeof item.body.content === 'string' ? String(item.body.content) : undefined;
+      if (!includeBody) {
+        const preview =
+          item.bodyPreview && typeof item.bodyPreview === 'string'
+            ? String(item.bodyPreview)
+            : original
+            ? stripHtml(original)
+            : '';
+        item.bodyPreview = preview.slice(0, previewCap);
+        if (item.body && 'content' in item.body) {
+          delete item.body.content;
+        }
+      } else if (original && bodyFormat === 'text') {
+        // Convert HTML to plain text when requested
+        item.body = {
+          contentType: 'Text',
+          content: stripHtml(original),
+        };
+      }
+    };
+
+    if (Array.isArray(json.value)) {
+      for (const it of json.value) processOne(it);
+    } else {
+      processOne(json);
+    }
+  };
   const parseBool = (val: string | undefined, dflt = true): boolean => {
     if (val == null) return dflt;
     const v = val.toLowerCase();
@@ -134,7 +185,7 @@ export function registerGraphTools(
     // Mail
     if (
       p.includes('/me/messages') ||
-      p.includes('/users/{user-id}/messages') ||
+      p.includes('/users/:userid/messages') || // generated client path style
       p.includes('/mailfolders') ||
       p.includes('/sendmail') ||
       p.includes('/attachments')
@@ -173,7 +224,11 @@ export function registerGraphTools(
     }
 
     // Teams (Chats/Channels)
-    if (p.startsWith('/chats') || p.startsWith('/teams')) {
+    if (
+      p.includes('/chats') || // covers /me/chats and /chats
+      p.includes('/joinedteams') ||
+      p.startsWith('/teams')
+    ) {
       return enableTeams;
     }
 
@@ -183,7 +238,7 @@ export function registerGraphTools(
     }
 
     // User info (get-current-user)
-    if (p === '/me') {
+    if (p === '/me' || p === '/users') {
       return enableUser;
     }
 
@@ -271,6 +326,15 @@ export function registerGraphTools(
       .boolean()
       .describe('Exclude the full response body and only return success or failure indication')
       .optional();
+    // Add includeBody/bodyFormat controls for endpoints that may contain HTML bodies
+    paramSchema['includeBody'] = z
+      .boolean()
+      .describe('Include full body fields (HTML or text) instead of safe preview')
+      .optional();
+    paramSchema['bodyFormat'] = z
+      .enum(['html', 'text'])
+      .describe('Format of returned body when includeBody=true')
+      .optional();
 
     const safeName = createSafeToolName(tool.alias);
     const safeTitle = createSafeToolName(tool.alias);
@@ -296,6 +360,19 @@ export function registerGraphTools(
         logger.info(`Tool ${safeName} called with params: ${JSON.stringify(params)}`);
         try {
           logger.info(`params: ${JSON.stringify(params)}`);
+
+          // Impersonation: resolve allowed mailbox set (Phase 0)
+          const impersonated =
+            ImpersonationContext.getImpersonatedUser() ||
+            (process.env.MS365_MCP_IMPERSONATE_USER || '').trim() ||
+            undefined;
+          const cache = new MailboxDiscoveryCache();
+          const validator = new AccessValidator(cache);
+          let allowedEmails: string[] = [];
+          if (impersonated) {
+            const allowed = await cache.getMailboxes(impersonated);
+            allowedEmails = allowed.map((m) => m.email.toLowerCase());
+          }
 
           const parameterDefinitions = tool.parameters || [];
 
@@ -341,9 +418,31 @@ export function registerGraphTools(
             if (paramDef) {
               switch (paramDef.type) {
                 case 'Path':
-                  path = path
-                    .replace(`{${paramName}}`, encodeURIComponent(paramValue as string))
-                    .replace(`:${paramName}`, encodeURIComponent(paramValue as string));
+                  // If this is userId and impersonation is active, enforce allowed set
+                  if (
+                    impersonated &&
+                    (paramName.toLowerCase() === 'userid' || paramName.toLowerCase() === 'user-id')
+                  ) {
+                    const requested = String(paramValue || '').trim();
+                    const normalized = requested.toLowerCase();
+                    const defaultUser = impersonated.toLowerCase();
+                    let finalUser = defaultUser;
+                    if (requested && allowedEmails.includes(normalized)) {
+                      finalUser = requested;
+                    } else if (requested && !allowedEmails.includes(normalized)) {
+                      // Ignore disallowed and force impersonated to avoid leaking
+                      logger.info(
+                        `[impersonation] Overriding disallowed userId=${requested} → ${impersonated}`
+                      );
+                    }
+                    path = path
+                      .replace(`{${paramName}}`, encodeURIComponent(finalUser))
+                      .replace(`:${paramName}`, encodeURIComponent(finalUser));
+                  } else {
+                    path = path
+                      .replace(`{${paramName}}`, encodeURIComponent(paramValue as string))
+                      .replace(`:${paramName}`, encodeURIComponent(paramValue as string));
+                  }
                   break;
 
                 case 'Query':
@@ -385,6 +484,11 @@ export function registerGraphTools(
               body = paramValue;
               logger.info(`Set body param: ${JSON.stringify(body)}`);
             }
+          }
+
+          // If impersonation active and tool targets /users/:userId but none was provided, force impersonated
+          if (impersonated && path.includes('/users/:userId')) {
+            path = path.replace(':userId', encodeURIComponent(impersonated));
           }
 
           // Sanitize search payloads for /search/query (Microsoft Search API)
@@ -514,28 +618,55 @@ export function registerGraphTools(
           if (response && response.content && response.content.length > 0) {
             const responseText = response.content[0].text;
             const responseSize = responseText.length;
+            // Keep high-level metrics at info
             logger.info(`Response size: ${responseSize} characters`);
+            // Enforce hard cap to avoid flooding agent context
+            const MAX_TEXT = Number(process.env.MS365_MCP_TEXT_CAP || '200000');
+            let textTruncatedMeta: { textTruncated: boolean; originalSize: number } | undefined;
 
             try {
               const jsonResponse = JSON.parse(responseText);
+              // Scrub or include message bodies depending on params
+              try {
+                const includeBody = params.includeBody === true;
+                const bodyFormat: 'html' | 'text' | undefined =
+                  params.bodyFormat === 'text' ? 'text' : params.bodyFormat === 'html' ? 'html' : undefined;
+                scrubBodies(jsonResponse, includeBody, bodyFormat);
+                response.content[0].text = JSON.stringify(jsonResponse);
+                if (response.content[0].text.length > MAX_TEXT) {
+                  textTruncatedMeta = {
+                    textTruncated: true,
+                    originalSize: response.content[0].text.length,
+                  };
+                  response.content[0].text = response.content[0].text.slice(0, MAX_TEXT);
+                }
+              } catch (e) {
+                logger.warn(`Body scrub/include step skipped: ${e}`);
+              }
               if (jsonResponse.value && Array.isArray(jsonResponse.value)) {
                 logger.info(`Response contains ${jsonResponse.value.length} items`);
-                if (jsonResponse.value.length > 0 && jsonResponse.value[0].body) {
-                  logger.info(
-                    `First item has body field with size: ${JSON.stringify(jsonResponse.value[0].body).length} characters`
-                  );
-                }
               }
               if (jsonResponse['@odata.nextLink']) {
                 logger.info(`Response has pagination nextLink: ${jsonResponse['@odata.nextLink']}`);
               }
-              const preview = responseText.substring(0, 500);
-              logger.info(`Response preview: ${preview}${responseText.length > 500 ? '...' : ''}`);
+              // Detailed previews only at debug and behind env flag
+              if (process.env.MS365_MCP_DEBUG === 'true') {
+                const preview = responseText.substring(0, 500);
+                logger.debug(
+                  `Response preview: ${preview}${responseText.length > 500 ? '...' : ''}`
+                );
+              }
             } catch {
-              const preview = responseText.substring(0, 500);
-              logger.info(
-                `Response preview (non-JSON): ${preview}${responseText.length > 500 ? '...' : ''}`
-              );
+              if (process.env.MS365_MCP_DEBUG === 'true') {
+                const preview = responseText.substring(0, 500);
+                logger.debug(
+                  `Response preview (non-JSON): ${preview}${responseText.length > 500 ? '...' : ''}`
+                );
+              }
+            }
+            // Attach truncation meta if applied
+            if (textTruncatedMeta) {
+              response._meta = { ...(response._meta || {}), ...textTruncatedMeta };
             }
           }
 

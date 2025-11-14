@@ -38,7 +38,7 @@ export const microsoftBearerTokenAuthMiddleware = (
       refreshToken,
     };
 
-    logger.info('Using bearer token authentication', {
+    logger.debug('Using bearer token authentication', {
       hasRefreshToken: !!refreshToken,
     });
 
@@ -57,7 +57,7 @@ export const microsoftBearerTokenAuthMiddleware = (
   const hasAlternativeAuth = hasClientCredentials || hasByotToken;
 
   if (hasAlternativeAuth) {
-    logger.info('No bearer token provided, using server authentication', {
+    logger.debug('No bearer token provided, using server authentication', {
       method: hasClientCredentials ? 'client_credentials' : 'byot',
     });
     next();
@@ -67,7 +67,7 @@ export const microsoftBearerTokenAuthMiddleware = (
   // No bearer token and no alternative auth - this might fail or might work with cached tokens
   // We'll allow the request through and let it fail gracefully if no auth is available
   // This handles the device code flow case where tokens are cached
-  logger.info('No bearer token provided, attempting with cached credentials');
+  logger.debug('No bearer token provided, attempting with cached credentials');
   next();
 };
 

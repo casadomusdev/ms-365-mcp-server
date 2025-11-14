@@ -1,0 +1,242 @@
+{
+  "GET /me": {
+    "displayName": "Dryrun User",
+    "userPrincipalName": "dryrun.user@example.com",
+    "id": "00000000-0000-0000-0000-000000000001",
+    "mail": "dryrun.user@example.com"
+  },
+  "GET /users": {
+    "value": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "displayName": "Dryrun User",
+        "userPrincipalName": "dryrun.user@example.com",
+        "mail": "dryrun.user@example.com"
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "displayName": "Shared Mailbox",
+        "userPrincipalName": "shared@example.com",
+        "mail": "shared@example.com"
+      }
+    ],
+    "@odata.count": 2
+  },
+  "GET /users/:userId": {
+    "displayName": "Example User",
+    "userPrincipalName": "example.user@example.com",
+    "id": "example-user-id",
+    "mail": "example.user@example.com"
+  },
+  "GET /me/messages": {
+    "value": [
+      {
+        "id": "msg_100000001",
+        "subject": "Dryrun message #1",
+        "from": { "emailAddress": { "name": "Sender 1", "address": "sender1@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": true,
+        "bodyPreview": "This is a preview for dryrun message #1.",
+        "receivedDateTime": "2025-01-15T09:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000002",
+        "subject": "Dryrun message #2",
+        "from": { "emailAddress": { "name": "Sender 2", "address": "sender2@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": false,
+        "bodyPreview": "This is a preview for dryrun message #2.",
+        "receivedDateTime": "2025-01-15T08:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000003",
+        "subject": "Dryrun message #3",
+        "from": { "emailAddress": { "name": "Sender 3", "address": "sender3@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": true,
+        "bodyPreview": "This is a preview for dryrun message #3.",
+        "receivedDateTime": "2025-01-15T07:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000004",
+        "subject": "Dryrun message #4",
+        "from": { "emailAddress": { "name": "Sender 4", "address": "sender4@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": false,
+        "bodyPreview": "This is a preview for dryrun message #4.",
+        "receivedDateTime": "2025-01-15T06:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000005",
+        "subject": "Dryrun message #5",
+        "from": { "emailAddress": { "name": "Sender 5", "address": "sender5@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": true,
+        "bodyPreview": "This is a preview for dryrun message #5.",
+        "receivedDateTime": "2025-01-15T05:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000006",
+        "subject": "Dryrun message #6",
+        "from": { "emailAddress": { "name": "Sender 6", "address": "sender6@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": false,
+        "bodyPreview": "This is a preview for dryrun message #6.",
+        "receivedDateTime": "2025-01-15T04:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000007",
+        "subject": "Dryrun message #7",
+        "from": { "emailAddress": { "name": "Sender 7", "address": "sender7@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": true,
+        "bodyPreview": "This is a preview for dryrun message #7.",
+        "receivedDateTime": "2025-01-15T03:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      },
+      {
+        "id": "msg_100000008",
+        "subject": "Dryrun message #8",
+        "from": { "emailAddress": { "name": "Sender 8", "address": "sender8@example.com" } },
+        "toRecipients": [{ "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } }],
+        "isRead": false,
+        "bodyPreview": "This is a preview for dryrun message #8.",
+        "receivedDateTime": "2025-01-15T02:00:00Z",
+        "hasAttachments": false,
+        "importance": "normal"
+      }
+    ],
+    "@odata.count": 8
+  },
+  "GET /users/:userId/messages": {
+    "value": [
+      { "id": "msg_100000001", "subject": "Dryrun message #1" },
+      { "id": "msg_100000002", "subject": "Dryrun message #2" },
+      { "id": "msg_100000003", "subject": "Dryrun message #3" },
+      { "id": "msg_100000004", "subject": "Dryrun message #4" },
+      { "id": "msg_100000005", "subject": "Dryrun message #5" },
+      { "id": "msg_100000006", "subject": "Dryrun message #6" },
+      { "id": "msg_100000007", "subject": "Dryrun message #7" },
+      { "id": "msg_100000008", "subject": "Dryrun message #8" }
+    ],
+    "@odata.count": 8
+  },
+  "GET /users/:userId/mailFolders": {
+    "value": [
+      { "id": "inbox", "displayName": "Inbox", "totalItemCount": 8 },
+      { "id": "sentitems", "displayName": "Sent Items", "totalItemCount": 2 },
+      { "id": "archive", "displayName": "Archive", "totalItemCount": 0 }
+    ],
+    "@odata.count": 3
+  },
+  "POST /users/:userId/sendMail": { "status": 202 },
+  "GET /me/calendars": {
+    "value": [
+      { "id": "cal_default", "name": "Calendar" },
+      { "id": "cal_team", "name": "Team Calendar" }
+    ],
+    "@odata.count": 2
+  },
+  "GET /me/events": {
+    "value": [
+      {
+        "id": "evt_200000001",
+        "subject": "Dryrun Event 1",
+        "bodyPreview": "Agenda for dryrun event 1",
+        "organizer": { "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } },
+        "attendees": [{ "emailAddress": { "name": "Alex Example", "address": "alex@example.com" }, "type": "required" }],
+        "start": { "dateTime": "2025-01-16T09:00:00Z", "timeZone": "UTC" },
+        "end": { "dateTime": "2025-01-16T10:00:00Z", "timeZone": "UTC" },
+        "location": { "displayName": "Room 100" },
+        "isAllDay": false,
+        "showAs": "busy",
+        "sensitivity": "normal"
+      },
+      {
+        "id": "evt_200000002",
+        "subject": "Dryrun Event 2",
+        "bodyPreview": "Agenda for dryrun event 2",
+        "organizer": { "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } },
+        "attendees": [{ "emailAddress": { "name": "Alex Example", "address": "alex@example.com" }, "type": "required" }],
+        "start": { "dateTime": "2025-01-17T09:00:00Z", "timeZone": "UTC" },
+        "end": { "dateTime": "2025-01-17T10:00:00Z", "timeZone": "UTC" },
+        "location": { "displayName": "Room 101" },
+        "isAllDay": false,
+        "showAs": "busy",
+        "sensitivity": "normal"
+      },
+      {
+        "id": "evt_200000003",
+        "subject": "Dryrun Event 3",
+        "bodyPreview": "Agenda for dryrun event 3",
+        "organizer": { "emailAddress": { "name": "Dryrun User", "address": "dryrun.user@example.com" } },
+        "attendees": [{ "emailAddress": { "name": "Alex Example", "address": "alex@example.com" }, "type": "required" }],
+        "start": { "dateTime": "2025-01-18T09:00:00Z", "timeZone": "UTC" },
+        "end": { "dateTime": "2025-01-18T10:00:00Z", "timeZone": "UTC" },
+        "location": { "displayName": "Room 102" },
+        "isAllDay": false,
+        "showAs": "busy",
+        "sensitivity": "normal"
+      }
+    ],
+    "@odata.count": 3
+  },
+  "GET /me/calendars/:calendarId/events": {
+    "value": [
+      { "id": "evt_200000001", "subject": "Dryrun Event 1" },
+      { "id": "evt_200000002", "subject": "Dryrun Event 2" },
+      { "id": "evt_200000003", "subject": "Dryrun Event 3" }
+    ],
+    "@odata.count": 3
+  },
+  "GET /me/drives": {
+    "value": [
+      {
+        "id": "drive_1",
+        "driveType": "personal",
+        "name": "Dryrun OneDrive",
+        "owner": { "user": { "displayName": "Dryrun User", "id": "00000000-0000-0000-0000-000000000001" } }
+      }
+    ],
+    "@odata.count": 1
+  },
+  "POST /search/query": {
+    "value": [
+      {
+        "hitsContainers": [
+          {
+            "total": 2,
+            "hits": [
+              { "id": "hit_1", "resource": { "subject": "Found: dryrun doc", "summary": "Example hit" } },
+              { "id": "hit_2", "resource": { "subject": "Another dryrun result", "summary": "Example hit 2" } }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "GET /organization": {
+    "value": [
+      {
+        "id": "org_1",
+        "displayName": "Dryrun Organization",
+        "verifiedDomains": [{ "name": "example.com", "isDefault": true }]
+      }
+    ],
+    "@odata.count": 1
+  }
+}
+

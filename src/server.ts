@@ -5,6 +5,7 @@ import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import express, { Request, Response } from 'express';
 import crypto from 'crypto';
 import logger, { enableConsoleLogging } from './logger.js';
+import { ImpersonationContext } from './impersonation/index.js';
 import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools } from './graph-tools.js';
 import GraphClient from './graph-client.js';
@@ -104,9 +105,26 @@ class MicrosoftGraphServer {
       app.use(express.json());
       app.use(express.urlencoded({ extended: true }));
 
-      // Add CORS headers for all routes
+      // Add CORS headers (allowlist via env, otherwise permissive for dev/local)
       app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
+        const allowlist =
+          (process.env.MS365_MCP_CORS_ORIGINS || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean) || [];
+        const origin = req.get('origin');
+
+        if (allowlist.length > 0) {
+          if (origin && allowlist.includes(origin)) {
+            res.header('Access-Control-Allow-Origin', origin);
+          } else {
+            // No wildcard; only vary on Origin
+            res.header('Vary', 'Origin');
+          }
+        } else {
+          // Default permissive CORS for local/dev
+          res.header('Access-Control-Allow-Origin', '*');
+        }
         res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
         res.header(
           'Access-Control-Allow-Headers',
@@ -115,6 +133,16 @@ class MicrosoftGraphServer {
 
         // Handle preflight requests
         if (req.method === 'OPTIONS') {
+          // If allowlist enforced and origin not allowed for /mcp, block preflight there
+          if (
+            allowlist.length > 0 &&
+            req.path.startsWith('/mcp') &&
+            origin &&
+            !allowlist.includes(origin)
+          ) {
+            res.sendStatus(403);
+            return;
+          }
           res.sendStatus(200);
           return;
         }
@@ -141,6 +169,53 @@ class MicrosoftGraphServer {
         next();
       });
 
+      // Basic per-IP rate limiting for /mcp when HTTP mode is used
+      const rateWindowMs = Number(process.env.MS365_MCP_RATE_LIMIT_WINDOW_MS || '60000');
+      const rateMax = Number(process.env.MS365_MCP_RATE_LIMIT_MAX || '60');
+      const buckets = new Map<
+        string,
+        { count: number; windowStart: number }
+      >();
+      app.use('/mcp', (req, res, next) => {
+        try {
+          const ip = (req.ip || req.socket.remoteAddress || 'unknown').toString();
+          const now = Date.now();
+          const b = buckets.get(ip);
+          if (!b || now - b.windowStart >= rateWindowMs) {
+            buckets.set(ip, { count: 1, windowStart: now });
+            return next();
+          }
+          if (b.count >= rateMax) {
+            res.status(429).json({
+              jsonrpc: '2.0',
+              error: { code: -32001, message: 'Rate limit exceeded' },
+              id: null,
+            });
+            return;
+          }
+          b.count += 1;
+          return next();
+        } catch {
+          return next();
+        }
+      });
+
+      // Impersonation context middleware (Phase 0: header-ready, env fallback)
+      app.use('/mcp', (req, _res, next) => {
+        try {
+          const hdrName =
+            (process.env.MS365_MCP_IMPERSONATE_HEADER || 'X-Impersonate-User').toLowerCase();
+          const fromHeader = req.headers[hdrName] as string | undefined;
+          const fromEnv = process.env.MS365_MCP_IMPERSONATE_USER;
+          const email = (fromHeader || fromEnv)?.trim();
+          if (email) {
+            ImpersonationContext.setImpersonatedUser(email);
+            logger.debug(`Impersonation active for request: ${email}`);
+          }
+        } catch {}
+        next();
+      });
+
       // Log all incoming MCP requests (useful for debugging OpenWebUI connections)
       app.use('/mcp', (req, _res, next) => {
         let jsonrpcMethod: string | undefined;
@@ -152,7 +227,7 @@ class MicrosoftGraphServer {
           }
         } catch {}
 
-        logger.info('Incoming MCP request', {
+        logger.debug('Incoming MCP request', {
           method: req.method,
           path: req.originalUrl,
           ip: req.ip,
@@ -169,7 +244,7 @@ class MicrosoftGraphServer {
         const start = Date.now();
         res.on('finish', () => {
           const durationMs = Date.now() - start;
-          logger.info('MCP response sent', {
+          logger.debug('MCP response sent', {
             method: req.method,
             path: req.originalUrl,
             status: res.statusCode,
@@ -398,7 +473,7 @@ class MicrosoftGraphServer {
       // Handle both GET and POST methods as required by MCP Streamable HTTP specification
       app.get(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        microsoftBearerTokenAuthMiddleware, // Uncomment to require Bearer auth on /mcp
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -421,10 +496,10 @@ class MicrosoftGraphServer {
             });
 
             const t0 = Date.now();
-            logger.info('MCP GET handling start');
+            logger.debug('MCP GET handling start');
             await this.server!.connect(transport);
             await transport.handleRequest(req as any, res as any, undefined);
-            logger.info('MCP GET handling complete', { durationMs: Date.now() - t0 });
+            logger.debug('MCP GET handling complete', { durationMs: Date.now() - t0 });
           } catch (error) {
             logger.error('Error handling MCP GET request:', error);
             if (!res.headersSent) {
@@ -443,7 +518,7 @@ class MicrosoftGraphServer {
 
       app.post(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        microsoftBearerTokenAuthMiddleware, // Uncomment to require Bearer auth on /mcp
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -465,11 +540,24 @@ class MicrosoftGraphServer {
               transport.close();
             });
 
+            // Log request body preview for POST (debug-only and gated)
+            if (process.env.MS365_MCP_DEBUG === 'true') {
+              try {
+                const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+                const maxReqPreview = Number(process.env.MS365_MCP_HTTP_LOG_PREVIEW || '2000');
+                logger.debug('MCP POST request body preview', {
+                  bytes: bodyStr?.length || 0,
+                  preview: (bodyStr || '').slice(0, maxReqPreview),
+                  truncated: (bodyStr?.length || 0) > maxReqPreview,
+                });
+              } catch {}
+            }
+
             const t0 = Date.now();
-            logger.info('MCP POST handling start');
+            logger.debug('MCP POST handling start');
             await this.server!.connect(transport);
             await transport.handleRequest(req as any, res as any, req.body);
-            logger.info('MCP POST handling complete', { durationMs: Date.now() - t0 });
+            logger.debug('MCP POST handling complete', { durationMs: Date.now() - t0 });
           } catch (error) {
             logger.error('Error handling MCP POST request:', error);
             if (!res.headersSent) {

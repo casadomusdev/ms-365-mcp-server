@@ -48,7 +48,7 @@ services:
     
     # === HTTP MODE CONFIGURATION ===
     # Uncomment the following line to enable HTTP mode (for both shared network and port exposure):
-    # command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}"]
+    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}", "-v"]
     
     # === PORT EXPOSURE (Only for Mode 3 - External Access) ===
     # Uncomment ONLY if you need to expose HTTP to host machine:
@@ -82,10 +82,42 @@ services:
       
       # Logging
       MS365_MCP_LOG_LEVEL: ${MS365_MCP_LOG_LEVEL:-info}
+      # Debug switch for verbose previews/logs (guards debug-only logs)
+      MS365_MCP_DEBUG: ${MS365_MCP_DEBUG:-false}
+      
+      # HTTP Security (only relevant in HTTP mode)
+      # Comma-separated allowlist of origins permitted to call /mcp (empty = allow all; dev only)
+      MS365_MCP_CORS_ORIGINS: ${MS365_MCP_CORS_ORIGINS:-}
+      # Basic per-IP rate limiting for /mcp
+      MS365_MCP_RATE_LIMIT_WINDOW_MS: ${MS365_MCP_RATE_LIMIT_WINDOW_MS:-60000}
+      MS365_MCP_RATE_LIMIT_MAX: ${MS365_MCP_RATE_LIMIT_MAX:-60}
+      
+      # Dry-run support (defaults allow using /app/mocks.json inside the container)
+      MS365_MCP_DRYRUN: ${MS365_MCP_DRYRUN:-false}
+      MS365_MCP_DRYRUN_FILE: ${MS365_MCP_DRYRUN_FILE:-/app/mocks.json}
+      
+      # Response size guard: hard cap on text content (characters)
+      MS365_MCP_TEXT_CAP: ${MS365_MCP_TEXT_CAP:-200000}
+      
+      # Impersonation (Client Credentials Mode)
+      # Impersonated identity (email/UPN). If unset and no trusted header is present, impersonation is disabled.
+      MS365_MCP_IMPERSONATE_USER: ${MS365_MCP_IMPERSONATE_USER:-}
+      # Header name used for per-request impersonation (email/UPN). Only trust via a reverse proxy.
+      MS365_MCP_IMPERSONATE_HEADER: ${MS365_MCP_IMPERSONATE_HEADER:-X-Impersonate-User}
+      # Optional comma-separated list of additional mailboxes allowed for the impersonated user.
+      MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES: ${MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES:-}
+      # Cache TTL (seconds) for mailbox discovery/allowlist (Phase 0 uses env allowlist only).
+      MS365_MCP_IMPERSONATE_CACHE_TTL: ${MS365_MCP_IMPERSONATE_CACHE_TTL:-3600}
+      # Rewrite /me → /users/{impersonated} in app-permissions mode to avoid Graph 400s.
+      MS365_MCP_IMPERSONATE_REWRITE_ME: ${MS365_MCP_IMPERSONATE_REWRITE_ME:-true}
+      # Extra logging for impersonation resolution and enforcement.
+      MS365_MCP_IMPERSONATE_DEBUG: ${MS365_MCP_IMPERSONATE_DEBUG:-false}
     
     # Mount volume for persistent token cache
     volumes:
       - token-cache:/app/data
+      # Mount repository mocks.json into the container for dry-run overrides
+      - ./mocks.json:/app/mocks.json:ro
     
     # Optional: Resource limits
     deploy:

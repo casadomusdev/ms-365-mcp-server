@@ -724,3 +724,61 @@ The user impersonation feature provides:
 - Requires additional Graph API calls for discovery
 - Cache management overhead
 - Need to handle permission changes
+
+## Implementation Details (Phase 0: Env-driven impersonation, header-ready)
+
+### Summary
+- Impersonation is resolved per request using the following priority:
+  1) HTTP header `X-Impersonate-User` (email/UPN), if present and trusted
+  2) Environment variable `MS365_MCP_IMPERSONATE_USER` (email/UPN)
+  3) If neither is available, impersonation is disabled for that request
+- When impersonation is resolved and the server runs with application permissions, `/me/...` is transparently rewritten to `/users/{impersonated}/...` to avoid Graph 400 errors.
+- Tools only operate on the allowed mailbox set:
+  - Strict default: only the impersonated mailbox
+  - Optional allowlist via `MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES` (comma-separated emails) to include shared/delegated mailboxes
+- Disallowed options are not surfaced; if a client forces a disallowed userId, the server ignores it and uses the impersonated mailbox instead.
+
+### HTTP Middleware (HTTP mode)
+Placed before `/mcp` handling:
+```ts
+app.use('/mcp', (req, _res, next) => {
+  const hdr = (process.env.MS365_MCP_IMPERSONATE_HEADER || 'X-Impersonate-User').toLowerCase();
+  const fromHeader = req.headers[hdr] as string | undefined;
+  const fromEnv = process.env.MS365_MCP_IMPERSONATE_USER;
+  const email = (fromHeader || fromEnv)?.trim();
+  if (email) ImpersonationContext.setImpersonatedUser(email);
+  next();
+});
+```
+Note: In STDIO mode there is no HTTP middleware; only the env variable applies.
+
+### Central `/me` Rewrite (App-permissions)
+In the request layer, if impersonation is active and the server is in client-credentials mode, `/me/...` is rewritten to `/users/{impersonated}/...`. If no impersonated identity is available, the request is blocked early with a configuration error.
+
+### Allowed Mailboxes (Phase 0)
+- Constructed as: `{ impersonated } ∪ allowlist(MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES)`
+- Cached with TTL `MS365_MCP_IMPERSONATE_CACHE_TTL` (default 3600s)
+- Used by the access validator and tool parameter shaping
+
+### Tool Behavior
+- For tools using `/users/:userId/...`:
+  - If `userId` is omitted, the server injects the impersonated email automatically.
+  - If `userId` is provided but not in the allowed set, it is ignored and replaced with the impersonated email (to avoid leaking info).
+- For tools using `/me/...`:
+  - The central rewrite applies; tools do not need to change their signatures.
+
+### Configuration
+- `MS365_MCP_IMPERSONATE_USER`: required to enable impersonation if no header is provided (email/UPN)
+- `MS365_MCP_IMPERSONATE_HEADER`: header name for dynamic impersonation (default: `X-Impersonate-User`)
+- `MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES`: optional comma-separated emails for shared/delegated mailboxes
+- `MS365_MCP_IMPERSONATE_CACHE_TTL`: TTL seconds for mailbox discovery cache (default: 3600)
+- `MS365_MCP_IMPERSONATE_REWRITE_ME`: enable `/me` rewrite in app-permissions (default: true)
+- `MS365_MCP_IMPERSONATE_DEBUG`: extra logging for impersonation flow
+
+### Security Notes
+- Only trust the impersonation header from a reverse proxy you control; strip it from public clients.
+- In Phase 0, if OpenWebUI does not send a header, the header logic is a no-op and the env user (if set) is used instead.
+
+### Expected Outcomes
+- No `/me` 400 errors under app-permissions when impersonation is set.
+- Clients only see/operate on permitted mailboxes; “access denied” should be rare and indicate misconfiguration or a client forcing invalid IDs.

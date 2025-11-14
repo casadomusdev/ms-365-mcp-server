@@ -87,9 +87,9 @@
 
 - test calendar interaction:
   - O list events (today, this week, next week, by specific date, etc) (works relatively well)
-  - ? create event (incl. invitations, setting of reminders, teams meeting sync possible?, etc) (doesnt work, bad request)
-  - ? edit/move events (malformed request)
-  - ? delete events (malformed request)
+  - O create event (incl. invitations, setting of reminders, teams meeting sync possible?, etc) (doesnt work, bad request)
+  - O edit/move events (malformed request)
+  - O delete events (malformed request)
 
 - test contacts:
   - O listing contacts works

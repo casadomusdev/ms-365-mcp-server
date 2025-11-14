@@ -1,5 +1,7 @@
 import logger from './logger.js';
 import { refreshAccessToken } from './lib/microsoft-auth.js';
+import { ImpersonationContext } from './impersonation/index.js';
+import { isDryRunEnabled, ensureMocksInitialized, mockFetch } from './mock/index.js';
 
 interface GraphRequestOptions {
   headers?: Record<string, string>;
@@ -146,13 +148,50 @@ class GraphClient {
     accessToken: string,
     options: GraphRequestOptions
   ): Promise<Response> {
-    const url = `https://graph.microsoft.com/v1.0${endpoint}`;
+    let effectiveEndpoint = endpoint;
+
+    // App-permissions /me rewrite when impersonation is active (default on)
+    const rewriteMe =
+      (process.env.MS365_MCP_IMPERSONATE_REWRITE_ME || 'true').toLowerCase() === 'true';
+    const isAppPermissions = !!process.env.MS365_MCP_CLIENT_SECRET;
+    if (rewriteMe && isAppPermissions && effectiveEndpoint.startsWith('/me')) {
+      const impersonated =
+        ImpersonationContext.getImpersonatedUser() ||
+        (process.env.MS365_MCP_IMPERSONATE_USER || '').trim();
+      if (impersonated) {
+        const suffix = effectiveEndpoint.slice('/me'.length);
+        effectiveEndpoint = `/users/${encodeURIComponent(impersonated)}${suffix}`;
+        logger.info(`[impersonation] Rewrote /me to ${effectiveEndpoint}`);
+      } else {
+        // No impersonation resolved; in dry-run mode allow /me through so mocks can respond
+        if (!isDryRunEnabled()) {
+          throw new Error(
+            'Impersonation not configured: set MS365_MCP_IMPERSONATE_USER or provide header X-Impersonate-User'
+          );
+        }
+      }
+    }
+
+    const url = `https://graph.microsoft.com/v1.0${effectiveEndpoint}`;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       ...options.headers,
     };
+
+    // Dry-run interception
+    if (isDryRunEnabled()) {
+      ensureMocksInitialized();
+      logger.info(`[dryrun] intercepting ${options.method || 'GET'} ${effectiveEndpoint}`);
+      const mockRes = await mockFetch(
+        options.method || 'GET',
+        effectiveEndpoint,
+        headers,
+        options.body
+      );
+      return mockRes as unknown as Response;
+    }
 
     return fetch(url, {
       method: options.method || 'GET',
