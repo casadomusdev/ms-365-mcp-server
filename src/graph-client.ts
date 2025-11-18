@@ -1,7 +1,8 @@
 import logger from './logger.js';
 import { refreshAccessToken } from './lib/microsoft-auth.js';
 import { ImpersonationContext } from './impersonation/index.js';
-import { isDryRunEnabled, ensureMocksInitialized, mockFetch } from './mock/index.js';
+import { isDryRunEnabled, ensureMocksInitialized, mockFetch, getDryrunMode, isMockMode } from './mock/index.js';
+import { MockResponse } from './mock/MockResponse.js';
 
 interface GraphRequestOptions {
   headers?: Record<string, string>;
@@ -149,6 +150,7 @@ class GraphClient {
     options: GraphRequestOptions
   ): Promise<Response> {
     let effectiveEndpoint = endpoint;
+    const dryrunMode = getDryrunMode();
 
     // App-permissions /me rewrite when impersonation is active (default on)
     const rewriteMe =
@@ -163,8 +165,8 @@ class GraphClient {
         effectiveEndpoint = `/users/${encodeURIComponent(impersonated)}${suffix}`;
         logger.info(`[impersonation] Rewrote /me to ${effectiveEndpoint}`);
       } else {
-        // No impersonation resolved; in dry-run mode allow /me through so mocks can respond
-        if (!isDryRunEnabled()) {
+        // No impersonation resolved; only allow /me through when in full mock mode
+        if (!isMockMode()) {
           throw new Error(
             'Impersonation not configured: set MS365_MCP_IMPERSONATE_USER or provide header X-Impersonate-User'
           );
@@ -181,9 +183,9 @@ class GraphClient {
     };
 
     // Dry-run interception
-    if (isDryRunEnabled()) {
+    if (dryrunMode === 'mock') {
       ensureMocksInitialized();
-      logger.info(`[dryrun] intercepting ${options.method || 'GET'} ${effectiveEndpoint}`);
+      logger.info(`[DRYRUN:MOCK] intercepting ${options.method || 'GET'} ${effectiveEndpoint}`);
       const mockRes = await mockFetch(
         options.method || 'GET',
         effectiveEndpoint,
@@ -191,6 +193,33 @@ class GraphClient {
         options.body
       );
       return mockRes as unknown as Response;
+    }
+    if (dryrunMode === 'partial') {
+      const method = (options.method || 'GET').toUpperCase();
+      if (method !== 'GET') {
+        const impersonated =
+          ImpersonationContext.getImpersonatedUser() ||
+          (process.env.MS365_MCP_IMPERSONATE_USER || '').trim() ||
+          undefined;
+        const bodySize = options.body ? Buffer.byteLength(options.body, 'utf8') : 0;
+        const status =
+          method === 'DELETE' ? 204 : method === 'POST' || method === 'PUT' || method === 'PATCH' ? 202 : 200;
+        logger.info('[DRYRUN:PARTIAL] suppressed mutation', {
+          method,
+          path: effectiveEndpoint,
+          status,
+          impersonated,
+          bodySize,
+        });
+        const init =
+          status === 204
+            ? { status, statusText: 'No Content' }
+            : status === 202
+            ? { status, statusText: 'Accepted' }
+            : { status, statusText: 'OK' };
+        const res = new MockResponse(status === 200 ? { success: true } : '', init);
+        return res as unknown as Response;
+      }
     }
 
     return fetch(url, {

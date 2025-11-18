@@ -4,9 +4,13 @@ Dry-run mode lets you exercise all tools without calling Microsoft Graph. Respon
 
 ## Enable
 
-Set the environment variable:
+Two ways to enable dry-run:
 
 ```bash
+# 1) Full mock mode (uses overrides + defaults)
+MS365_MCP_DRYRUN_FILE=./mocks.json
+
+# 2) Partial mode (reads go to live Graph; writes are simulated)
 MS365_MCP_DRYRUN=true
 ```
 
@@ -18,14 +22,21 @@ Optional:
 Example:
 
 ```bash
-MS365_MCP_DRYRUN=true
 MS365_MCP_DRYRUN_FILE=./mocks.json
 MS365_MCP_DRYRUN_SEED=1337
 ```
 
+## Modes
+
+- Mock mode (preferred): If `MS365_MCP_DRYRUN_FILE` points to a readable file, all requests are served by the mock layer (`src/mock/*`). No calls to Microsoft Graph are made.
+- Partial mode: If `MS365_MCP_DRYRUN=true` and no valid overrides file is present, read-only requests (GET) go to live Microsoft Graph; mutating requests (POST/PUT/PATCH/DELETE) are suppressed and acknowledged safely (no side effects).
+- Off: Neither of the above is set.
+
 ## What it does
 
-All Graph requests are intercepted centrally in `src/graph-client.ts`. When dry-run is enabled, requests are routed to `src/mock/` and a Response-like object is returned.
+All Graph requests are intercepted centrally in `src/graph-client.ts`.
+- In mock mode, requests are routed to `src/mock/` and a Response-like object is returned.
+- In partial mode, GET requests pass through to real Graph; non-GET mutations are intercepted and a Response-like success is returned (POST/PUT/PATCH → 202, DELETE → 204).
 
 ## Structure
 
@@ -34,7 +45,7 @@ All Graph requests are intercepted centrally in `src/graph-client.ts`. When dry-
 - `src/mock/registry.ts`: in-memory registry (`registerMock`, `find`)
 - `src/mock/defaults.ts`: built-in two-user dataset (mail + calendar) with safe write statuses
 - `src/mock/loader.ts`: loads overrides from `MS365_MCP_DRYRUN_FILE`
-- `src/mock/index.ts`: enable/initialize and `mockFetch()`
+- `src/mock/index.ts`: enable/initialize, mode detection, and `mockFetch()`
 
 ## Defaults
 
@@ -73,7 +84,8 @@ Unknown endpoints fall back to:
 ## Impersonation and path rewriting
 
 - In application-permissions mode, `/me/...` is rewritten to `/users/{impersonated}/...` when `MS365_MCP_IMPERSONATE_REWRITE_ME=true` (default).
-- In dry-run, if impersonation is NOT configured, `/me/...` is allowed through so mocks can respond (no rewrite error).
+- In mock mode, if impersonation is NOT configured, `/me/...` is allowed through so mocks can respond (no rewrite error).
+- In partial mode, normal rewrite/error behavior applies (no special allowance for `/me`).
 - Dry-run also provides `/users → /me` fallback as described above.
 
 ## Overrides file format
@@ -107,8 +119,10 @@ Value can be:
   ```
 - Enable in `.env`:
   ```
-  MS365_MCP_DRYRUN=true
+  # Mock mode
   MS365_MCP_DRYRUN_FILE=/app/mocks.json
+  # Partial mode (if no file above)
+  MS365_MCP_DRYRUN=true
   # Optional impersonation
   MS365_MCP_IMPERSONATE_USER=a.viets@casadomus.de
   MS365_MCP_IMPERSONATE_REWRITE_ME=true
@@ -117,6 +131,7 @@ Value can be:
 ## Notes
 
 - The mock layer returns Response-like objects (status, statusText, ok, headers.get, text). No changes needed in tools.
-- Logs include a `[dryrun]` prefix, the matched pattern, and status. Overrides are logged on load, and fallback usage is also logged.
+- Logs include a `[DRYRUN:MOCK]` prefix in mock mode (matches, fallbacks, overrides). A startup banner logs `[DRYRUN] active` with `{ mode }` when enabled.
+- In partial mode, suppressed mutations log with `[DRYRUN:PARTIAL]` and include `method`, `path`, `status`, `impersonated`, and `bodySize`.
 
 

@@ -5,6 +5,7 @@ import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import express, { Request, Response } from 'express';
 import crypto from 'crypto';
 import logger, { enableConsoleLogging } from './logger.js';
+import { getDryrunMode } from './mock/index.js';
 import { ImpersonationContext } from './impersonation/index.js';
 import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools } from './graph-tools.js';
@@ -80,6 +81,13 @@ class MicrosoftGraphServer {
     }
 
     logger.info('Microsoft 365 MCP Server starting...');
+    // Announce DRYRUN mode early if active
+    try {
+      const mode = getDryrunMode();
+      if (mode !== 'off') {
+        logger.info('[DRYRUN] active', { mode });
+      }
+    } catch {}
 
     // Debug: Check if environment variables are loaded
     logger.info('Environment Variables Check:', {

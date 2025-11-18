@@ -24,6 +24,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   'get-shared-mailbox-message': 'Get a message from a shared mailbox by exact messageId. First list messages to obtain the id, then fetch.',
   'send-shared-mailbox-mail': 'Send mail from a shared mailbox. Requires explicit recipient email addresses and the shared mailbox identity. Prefer simple, non-HTML bodies.',
 
+  // Auth & Account Management
+  'list-impersonated-mailboxes': 'List all mailboxes (personal, shared, delegated) accessible to the user specified in MS365_MCP_IMPERSONATE_USER environment variable. Returns mailbox type, email, display name. Use this to discover which mailboxes the impersonated user can access.',
+
   // Users
   'list-users': '',
 

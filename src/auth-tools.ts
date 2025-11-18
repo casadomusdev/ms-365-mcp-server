@@ -207,4 +207,34 @@ export function registerAuthTools(server: McpServer, authManager: AuthManager): 
       }
     }
   );
+
+  server.tool(
+    'list-impersonated-mailboxes',
+    'List all mailboxes (personal, shared, delegated) accessible to the user specified in MS365_MCP_IMPERSONATE_USER',
+    {},
+    async () => {
+      try {
+        const result = await authManager.listImpersonatedMailboxes();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: `Failed to list impersonated mailboxes: ${(error as Error).message}`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+  );
 }

@@ -18,6 +18,8 @@
 #    
 #    To enable HTTP mode on shared network:
 #      a) Uncomment the 'command:' line in the HTTP MODE section below
+#         - Include --enable-auth-tools if you want auth-related MCP tools
+#           (e.g. list-impersonated-mailboxes) available to LLM clients.
 #      b) Keep 'ports:' section COMMENTED (no host exposure)
 #      c) Client container must join 'ms365-mcp-net' network or shared network
 #      d) Optionally set MCP_HTTP_PORT in .env (default: 3000)
@@ -47,9 +49,11 @@ services:
     restart: unless-stopped
     
     # === HTTP MODE CONFIGURATION ===
-    # Uncomment the following line to enable HTTP mode (for both shared network and port exposure):
-    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}", "-v"]
-    
+    # This starts the MCP server in HTTP mode on MS365_MCP_HTTP_PORT.
+    # NOTE: --enable-auth-tools is required so auth-related MCP tools (including
+    #       list-impersonated-mailboxes) are registered and visible to LLM clients.
+    #       Without this flag, auth tools are disabled by default in HTTP mode.
+    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}", "-v", "--enable-auth-tools"]
     # === PORT EXPOSURE (Only for Mode 3 - External Access) ===
     # Uncomment ONLY if you need to expose HTTP to host machine:
     # ports:

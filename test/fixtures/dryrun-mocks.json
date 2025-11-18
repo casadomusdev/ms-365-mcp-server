@@ -1,0 +1,9 @@
+{
+  "GET /me/messages": {
+    "value": [
+      { "id": "m1", "subject": "Hello from fixture" }
+    ]
+  }
+}
+
+

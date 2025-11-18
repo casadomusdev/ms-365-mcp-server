@@ -19,7 +19,7 @@ export function applyOverridesFromFile(reg: MockRegistry): void {
   try {
     const abs = path.isAbsolute(file) ? file : path.join(process.cwd(), file);
     if (!fs.existsSync(abs)) {
-      logger.warn(`[dryrun] overrides file not found: ${abs}`);
+      logger.warn(`[DRYRUN:MOCK] overrides file not found: ${abs}`);
       return;
     }
     const raw = fs.readFileSync(abs, 'utf8');
@@ -28,7 +28,7 @@ export function applyOverridesFromFile(reg: MockRegistry): void {
       // key syntax: "METHOD /path/pattern"
       const spaceIdx = key.indexOf(' ');
       if (spaceIdx <= 0) {
-        logger.warn(`[dryrun] invalid override key: ${key}`);
+        logger.warn(`[DRYRUN:MOCK] invalid override key: ${key}`);
         continue;
       }
       const method = key.slice(0, spaceIdx).toUpperCase();
@@ -50,9 +50,9 @@ export function applyOverridesFromFile(reg: MockRegistry): void {
         return new MockResponse(val);
       });
     }
-    logger.info(`[dryrun] overrides loaded from ${abs}`);
+    logger.info(`[DRYRUN:MOCK] overrides loaded from ${abs}`);
   } catch (e) {
-    logger.error(`[dryrun] failed to load overrides: ${(e as Error).message}`);
+    logger.error(`[DRYRUN:MOCK] failed to load overrides: ${(e as Error).message}`);
   }
 }
 

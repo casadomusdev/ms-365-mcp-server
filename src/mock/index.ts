@@ -1,4 +1,6 @@
 import logger from '../logger.js';
+import fs from 'fs';
+import path from 'path';
 import { MockRegistry } from './registry.js';
 import { loadDefaultMocks } from './defaults.js';
 import { applyOverridesFromFile } from './loader.js';
@@ -13,6 +15,41 @@ export function isDryRunEnabled(): boolean {
   return v === '1' || (v ?? '').toLowerCase() === 'true';
 }
 
+type DryrunMode = 'off' | 'mock' | 'partial';
+let selectedMode: DryrunMode | null = null;
+
+function fileExists(filePath: string): boolean {
+  try {
+    const abs = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+    return fs.existsSync(abs) && fs.statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function getDryrunMode(): DryrunMode {
+  if (selectedMode) return selectedMode;
+  const file = process.env.MS365_MCP_DRYRUN_FILE;
+  if (file && fileExists(file)) {
+    selectedMode = 'mock';
+  } else if (isDryRunEnabled()) {
+    selectedMode = 'partial';
+  } else {
+    selectedMode = 'off';
+  }
+  logger.info('[DRYRUN] mode selected', {
+    mode: selectedMode,
+    hasDryrunEnv: isDryRunEnabled(),
+    dryrunFile: file || null,
+    dryrunFileExists: file ? fileExists(file) : false,
+  });
+  return selectedMode;
+}
+
+export function isMockMode(): boolean {
+  return getDryrunMode() === 'mock';
+}
+
 export function ensureMocksInitialized(): void {
   if (initialized) return;
   registry = new MockRegistry();
@@ -21,7 +58,7 @@ export function ensureMocksInitialized(): void {
   loadDefaultMocks(registry, seed);
   applyOverridesFromFile(registry);
   initialized = true;
-  logger.info('[dryrun] mock registry initialized');
+  logger.info('[DRYRUN:MOCK] mock registry initialized');
 }
 
 export async function mockFetch(
@@ -48,10 +85,10 @@ export async function mockFetch(
         body: parsedBody,
         query,
       });
-      logger.info(`[dryrun] ${method} ${endpoint} → mocked ${res.status}`);
+      logger.info(`[DRYRUN:MOCK] ${method} ${endpoint} → mocked ${res.status}`);
       return res;
     } catch (e) {
-      logger.error(`[dryrun] mock handler failed: ${(e as Error).message}`);
+      logger.error(`[DRYRUN:MOCK] mock handler failed: ${(e as Error).message}`);
       return new MockResponse(
         { error: 'Mock handler error', message: (e as Error).message },
         { status: 500, statusText: 'Mock Error' }
@@ -74,10 +111,10 @@ export async function mockFetch(
           body: parsedBody,
           query,
         });
-        logger.info(`[dryrun] ${method} ${endpoint} → fallback to ${altPath} mocked ${res.status}`);
+        logger.info(`[DRYRUN:MOCK] ${method} ${endpoint} → fallback to ${altPath} mocked ${res.status}`);
         return res;
       } catch (e) {
-        logger.error(`[dryrun] fallback mock handler failed: ${(e as Error).message}`);
+        logger.error(`[DRYRUN:MOCK] fallback mock handler failed: ${(e as Error).message}`);
         return new MockResponse(
           { error: 'Mock handler error', message: (e as Error).message },
           { status: 500, statusText: 'Mock Error' }
