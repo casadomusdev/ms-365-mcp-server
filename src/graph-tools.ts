@@ -361,11 +361,39 @@ export function registerGraphTools(
         try {
           logger.info(`params: ${JSON.stringify(params)}`);
 
-          // Impersonation: resolve allowed mailbox set (Phase 0)
-          const impersonated =
-            ImpersonationContext.getImpersonatedUser() ||
-            (process.env.MS365_MCP_IMPERSONATE_USER || '').trim() ||
-            undefined;
+          // Impersonation: Extract from all possible sources and log which one is used
+          const impersonateHeaderName = (process.env.MS365_MCP_IMPERSONATE_HEADER || 'X-Impersonate-User').toLowerCase();
+          const fromMetaHeaders = params._meta?.headers?.[impersonateHeaderName] as string | undefined;
+          const fromContext = ImpersonationContext.getImpersonatedUser();
+          const fromEnv = (process.env.MS365_MCP_IMPERSONATE_USER || '').trim() || undefined;
+          
+          // Priority: _meta headers > AsyncLocalStorage context > env var
+          let impersonated: string | undefined;
+          let impersonationSource: 'meta-header' | 'http-context' | 'env-var' | 'none' = 'none';
+          
+          if (fromMetaHeaders?.trim()) {
+            impersonated = fromMetaHeaders.trim();
+            impersonationSource = 'meta-header';
+          } else if (fromContext) {
+            impersonated = fromContext;
+            impersonationSource = 'http-context';
+          } else if (fromEnv) {
+            impersonated = fromEnv;
+            impersonationSource = 'env-var';
+          }
+          
+          // Debug logging for impersonation mode
+          logger.info(`[Impersonation Debug] Tool: ${safeName}`, {
+            mode: impersonationSource,
+            headerName: impersonateHeaderName,
+            headerValue: fromMetaHeaders?.trim() || 'not set',
+            contextValue: fromContext || 'not set',
+            envVarValue: fromEnv || 'not set',
+            finalValue: impersonated || 'none',
+            source: impersonationSource,
+            metaHeadersPresent: !!params._meta?.headers,
+            allMetaHeaders: params._meta?.headers ? Object.keys(params._meta.headers) : []
+          });
           const cache = new MailboxDiscoveryCache();
           const validator = new AccessValidator(cache);
           let allowedEmails: string[] = [];
