@@ -73,6 +73,76 @@ class MicrosoftGraphServer {
       this.options.enabledTools,
       this.options.orgMode
     );
+
+    // Install transport-agnostic _meta extraction hook
+    // This works for both STDIO and HTTP modes by intercepting JSON-RPC requests
+    this.installMetaExtractionHook();
+  }
+
+  /**
+   * Installs a hook to extract _meta from incoming JSON-RPC requests.
+   * This enables MCPO header forwarding in both STDIO and HTTP modes.
+   * 
+   * Note: We use setRequestHandler with CallToolRequestSchema to intercept
+   * tool calls before they reach the registered tool handlers.
+   */
+  private installMetaExtractionHook(): void {
+    const lowLevelServer = this.server!.server;
+
+    // Import the schema we need to intercept
+    import('@modelcontextprotocol/sdk/types.js').then(({ CallToolRequestSchema }) => {
+      // Get the existing handler (if any) - McpServer registers its own
+      const existingHandlers = (lowLevelServer as any)._requestHandlers || new Map();
+      const originalHandler = existingHandlers.get('tools/call');
+
+      // Install our interceptor
+      lowLevelServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+        try {
+          // Extract _meta from JSON-RPC request params
+          if (request?.params?._meta) {
+            const meta = request.params._meta as Record<string, any>;
+
+            // Store full _meta in context
+            ImpersonationContext.setMeta(meta);
+
+            // Check for impersonation header in _meta.headers
+            const headers = (meta.headers || {}) as Record<string, string>;
+            const impersonateUser =
+              headers['x-impersonate-user'] ||
+              headers['X-Impersonate-User'] ||
+              headers['X-IMPERSONATE-USER'];
+
+            if (impersonateUser) {
+              ImpersonationContext.setImpersonatedUser(String(impersonateUser));
+              logger.debug('Impersonation from _meta.headers', {
+                user: impersonateUser,
+                tool: request.params.name,
+              });
+            }
+
+            // Log _meta extraction for debugging
+            logger.debug('Extracted _meta from tool call', {
+              tool: request.params.name,
+              hasHeaders: !!meta.headers,
+              headerCount: headers ? Object.keys(headers).length : 0,
+            });
+          }
+        } catch (error) {
+          // Don't let _meta extraction errors break request processing
+          logger.error('Error extracting _meta from request', error);
+        }
+
+        // Delegate to the original handler registered by McpServer
+        if (originalHandler) {
+          return originalHandler(request);
+        }
+
+        // If no handler exists (shouldn't happen), return an error
+        throw new Error('No tool handler registered');
+      });
+
+      logger.info('Installed _meta extraction hook for MCPO header forwarding support');
+    });
   }
 
   async start(): Promise<void> {

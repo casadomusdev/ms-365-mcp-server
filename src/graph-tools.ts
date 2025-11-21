@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import logger from './logger.js';
 import GraphClient from './graph-client.js';
 import { api } from './generated/client.js';
@@ -363,7 +364,11 @@ export function registerGraphTools(
 
           // Impersonation: Extract from all possible sources and log which one is used
           const impersonateHeaderName = (process.env.MS365_MCP_IMPERSONATE_HEADER || 'X-Impersonate-User').toLowerCase();
-          const fromMetaHeaders = params._meta?.headers?.[impersonateHeaderName] as string | undefined;
+          
+          // First check for _meta in AsyncLocalStorage (set by request interceptor)
+          const storedMeta = ImpersonationContext.getMeta();
+          const fromMetaHeaders = storedMeta?.headers?.[impersonateHeaderName] as string | undefined;
+          
           const fromContext = ImpersonationContext.getImpersonatedUser();
           const fromEnv = (process.env.MS365_MCP_IMPERSONATE_USER || '').trim() || undefined;
           
@@ -391,9 +396,9 @@ export function registerGraphTools(
             envVarValue: fromEnv || 'not set',
             finalValue: impersonated || 'none',
             source: impersonationSource,
-            metaHeadersPresent: !!params._meta?.headers,
-            metaPresent: !!params._meta,            
-            allMetaHeaders: params._meta?.headers ? Object.keys(params._meta.headers) : []
+            storedMetaPresent: !!storedMeta,
+            storedMetaHeadersPresent: !!storedMeta?.headers,
+            allStoredMetaHeaders: storedMeta?.headers ? Object.keys(storedMeta.headers) : []
           });
           const cache = new MailboxDiscoveryCache();
           const validator = new AccessValidator(cache);
@@ -733,4 +738,17 @@ export function registerGraphTools(
       }
     );
   }
+
+  // NOTE: The MCP TypeScript SDK's server.tool() method only passes the 'arguments' 
+  // field to tool handlers, not the full CallToolRequestParams which contains _meta.
+  // This means _meta data sent by MCPO is currently inaccessible in tool handlers.
+  // 
+  // The SDK would need to be updated to either:
+  // 1. Pass the full params object (including _meta) to tool handlers
+  // 2. Provide a setRequestHandler() method to intercept requests before tool handlers
+  // 3. Expose _meta through a different mechanism
+  //
+  // For now, impersonation will work via:
+  // - HTTP middleware (for HTTP mode) -> ImpersonationContext  
+  // - MS365_MCP_IMPERSONATE_USER env var (fallback for all modes)
 }
