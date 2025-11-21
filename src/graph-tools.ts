@@ -392,6 +392,7 @@ export function registerGraphTools(
             finalValue: impersonated || 'none',
             source: impersonationSource,
             metaHeadersPresent: !!params._meta?.headers,
+            metaPresent: !!params._meta,            
             allMetaHeaders: params._meta?.headers ? Object.keys(params._meta.headers) : []
           });
           const cache = new MailboxDiscoveryCache();
