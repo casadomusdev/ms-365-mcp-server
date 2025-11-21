@@ -151,7 +151,7 @@ tokens-*/
 # Docker volume data directory
 data/
 
-openapi/openapi-trimmed.yaml
+openapi
 
 src/generated/client.ts
 **/.claude/settings.local.json

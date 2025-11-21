@@ -164,9 +164,9 @@ function flattenComplexSchemasRecursively(schemas) {
       delete schema.allOf;
     }
 
-    if (schema.properties && shouldReduceProperties(schema)) {
-      reduceProperties(schema, schemaName);
-    }
+    //if (schema.properties && shouldReduceProperties(schema)) {
+    //  reduceProperties(schema, schemaName);
+    //}
 
     if (schema.properties) {
       simplifyNestedPropertiesRecursively(schema.properties);
