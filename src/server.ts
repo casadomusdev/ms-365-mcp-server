@@ -97,13 +97,16 @@ class MicrosoftGraphServer {
 
       // Install our interceptor
       lowLevelServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+        // Build request context from _meta
+        const context: { impersonatedUser?: string; meta?: Record<string, any> } = {};
+
         try {
           // Extract _meta from JSON-RPC request params
           if (request?.params?._meta) {
             const meta = request.params._meta as Record<string, any>;
 
             // Store full _meta in context
-            ImpersonationContext.setMeta(meta);
+            context.meta = meta;
 
             // Check for impersonation header in _meta.headers
             const headers = (meta.headers || {}) as Record<string, string>;
@@ -113,7 +116,7 @@ class MicrosoftGraphServer {
               headers['X-IMPERSONATE-USER'];
 
             if (impersonateUser) {
-              ImpersonationContext.setImpersonatedUser(String(impersonateUser));
+              context.impersonatedUser = String(impersonateUser);
               logger.debug('Impersonation from _meta.headers', {
                 user: impersonateUser,
                 tool: request.params.name,
@@ -132,9 +135,10 @@ class MicrosoftGraphServer {
           logger.error('Error extracting _meta from request', error);
         }
 
-        // Delegate to the original handler registered by McpServer
+        // Delegate to the original handler within the AsyncLocalStorage context
+        // This ensures the context propagates to async operations in the tool handler
         if (originalHandler) {
-          return originalHandler(request);
+          return ImpersonationContext.withContext(context, () => originalHandler(request));
         }
 
         // If no handler exists (shouldn't happen), return an error
