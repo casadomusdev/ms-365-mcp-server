@@ -1,6 +1,42 @@
 import fs from 'fs';
 import yaml from 'js-yaml';
 
+// Priority properties to keep when reducing large schemas
+const PRIORITY_PROPERTIES = [
+  'attachments',
+  'bccRecipients',
+  'body',
+  'ccRecipients',
+  'code',
+  'content',
+  'createdDateTime',
+  'description',
+  'details',
+  'displayName',
+  'email',
+  'enabled',
+  'error',
+  'href',
+  'id',
+  'lastModifiedDateTime',
+  'message',
+  'method',
+  'name',
+  'path',
+  'state',
+  'status',
+  'subject',
+  'title',
+  'toRecipients',
+  'type',
+  'url',
+  'userPrincipalName',
+  'value',
+];
+
+// Threshold for when to reduce properties (based on priority list length)
+const PROPERTY_THRESHOLD = PRIORITY_PROPERTIES.length;
+
 export function createAndSaveSimplifiedOpenAPI(endpointsFile, openapiFile, openapiTrimmedFile) {
   const allEndpoints = JSON.parse(fs.readFileSync(endpointsFile, 'utf8'));
   const endpoints = allEndpoints.filter((endpoint) => !endpoint.disabled);
@@ -164,9 +200,9 @@ function flattenComplexSchemasRecursively(schemas) {
       delete schema.allOf;
     }
 
-    //if (schema.properties && shouldReduceProperties(schema)) {
-    //  reduceProperties(schema, schemaName);
-    //}
+    if (schema.properties && shouldReduceProperties(schema)) {
+      reduceProperties(schema, schemaName);
+    }
 
     if (schema.properties) {
       simplifyNestedPropertiesRecursively(schema.properties);
@@ -216,55 +252,26 @@ function flattenComplexSchema(schema, schemaName) {
 function shouldReduceProperties(schema) {
   if (!schema.properties) return false;
   const propertyCount = Object.keys(schema.properties).length;
-  return propertyCount > 25;
+  return propertyCount > PROPERTY_THRESHOLD;
 }
 
 function reduceProperties(schema, schemaName) {
   const properties = schema.properties;
   const propertyCount = Object.keys(properties).length;
 
-  if (propertyCount > 25) {
-    console.log(`Reducing properties in ${schemaName} (${propertyCount} -> 25)`);
-
-    const priorityProperties = [
-      'id',
-      'name',
-      'displayName',
-      'description',
-      'createdDateTime',
-      'lastModifiedDateTime',
-      'status',
-      'state',
-      'type',
-      'value',
-      'email',
-      'userPrincipalName',
-      'title',
-      'content',
-      'body',
-      'subject',
-      'message',
-      'attachments',
-      'error',
-      'code',
-      'details',
-      'url',
-      'href',
-      'path',
-      'method',
-      'enabled',
-    ];
+  if (propertyCount > PROPERTY_THRESHOLD) {
+    console.log(`Reducing properties in ${schemaName} (${propertyCount} -> ${PROPERTY_THRESHOLD})`);
 
     const keptProperties = {};
     const propertyKeys = Object.keys(properties);
 
-    priorityProperties.forEach((key) => {
+    PRIORITY_PROPERTIES.forEach((key) => {
       if (properties[key]) {
         keptProperties[key] = properties[key];
       }
     });
 
-    const remainingSlots = 25 - Object.keys(keptProperties).length;
+    const remainingSlots = PROPERTY_THRESHOLD - Object.keys(keptProperties).length;
     const otherKeys = propertyKeys.filter((key) => !keptProperties[key]);
 
     otherKeys.slice(0, remainingSlots).forEach((key) => {
@@ -275,7 +282,7 @@ function reduceProperties(schema, schemaName) {
     schema.additionalProperties = true;
     schema.description = `${
       schema.description || ''
-    } [Note: Simplified from ${propertyCount} properties to 25 most common ones]`.trim();
+    } [Note: Simplified from ${propertyCount} properties to ${PROPERTY_THRESHOLD} most common ones]`.trim();
   }
 }
 
