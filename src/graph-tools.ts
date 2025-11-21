@@ -379,12 +379,16 @@ export function registerGraphTools(
           if (fromMetaHeaders?.trim()) {
             impersonated = fromMetaHeaders.trim();
             impersonationSource = 'meta-header';
+            // CRITICAL: Set it in the context so graph-client.ts can read it
+            ImpersonationContext.setImpersonatedUser(impersonated);
           } else if (fromContext) {
             impersonated = fromContext;
             impersonationSource = 'http-context';
           } else if (fromEnv) {
             impersonated = fromEnv;
             impersonationSource = 'env-var';
+            // Also set env var in context for consistency
+            ImpersonationContext.setImpersonatedUser(impersonated);
           }
           
           // Debug logging for impersonation mode
