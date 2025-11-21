@@ -9,7 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { getToolDescription } from './tool-descriptions.js';
-import { ImpersonationContext, MailboxDiscoveryCache, AccessValidator } from './impersonation/index.js';
+import { ImpersonationContext, MailboxDiscoveryCache } from './impersonation/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -379,7 +379,6 @@ export function registerGraphTools(
           if (fromMetaHeaders?.trim()) {
             impersonated = fromMetaHeaders.trim();
             impersonationSource = 'meta-header';
-            // CRITICAL: Set it in the context so graph-client.ts can read it
             ImpersonationContext.setImpersonatedUser(impersonated);
           } else if (fromContext) {
             impersonated = fromContext;
@@ -387,7 +386,6 @@ export function registerGraphTools(
           } else if (fromEnv) {
             impersonated = fromEnv;
             impersonationSource = 'env-var';
-            // Also set env var in context for consistency
             ImpersonationContext.setImpersonatedUser(impersonated);
           }
           
@@ -404,13 +402,15 @@ export function registerGraphTools(
             storedMetaHeadersPresent: !!storedMeta?.headers,
             allStoredMetaHeaders: storedMeta?.headers ? Object.keys(storedMeta.headers) : []
           });
+
           const cache = new MailboxDiscoveryCache();
-          const validator = new AccessValidator(cache);
           let allowedEmails: string[] = [];
           if (impersonated) {
             const allowed = await cache.getMailboxes(impersonated);
             allowedEmails = allowed.map((m) => m.email.toLowerCase());
           }
+
+          logger.info(`Allowed mailboxes after mailbox discovery: ${JSON.stringify(allowedEmails)}`);
 
           const parameterDefinitions = tool.parameters || [];
 
