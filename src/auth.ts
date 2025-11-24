@@ -5,7 +5,8 @@ import logger from './logger.js';
 import fs, { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { MailboxDiscoveryCache } from './impersonation/MailboxDiscoveryCache.js';
+import { MailboxDiscoveryService } from './impersonation/MailboxDiscoveryService.js';
+import GraphClient from './graph-client.js';
 
 interface EndpointConfig {
   pathPattern: string;
@@ -798,269 +799,24 @@ class AuthManager {
         };
       }
 
-      const token = await this.getToken();
-      if (!token) {
-        throw new Error('No valid token found');
-      }
-
-      const mailboxes: any[] = [];
-
-      // 1. Get the impersonated user's personal mailbox
-      try {
-        const userResponse = await fetch(`https://graph.microsoft.com/v1.0/users/${impersonateUser}`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        if (userResponse.ok) {
-          const userData = await userResponse.json();
-          mailboxes.push({
-            id: userData.id,
-            type: 'personal',
-            displayName: userData.displayName,
-            email: userData.userPrincipalName || userData.mail,
-            isPrimary: true,
-          });
-          logger.info(`Found personal mailbox for ${impersonateUser}: ${userData.displayName}`);
-        } else {
-          const errorText = await userResponse.text();
-          logger.error(`Could not fetch user ${impersonateUser}: ${userResponse.status} - ${errorText}`);
-          return {
-            success: false,
-            error: `Could not find user ${impersonateUser}. Status: ${userResponse.status}`,
-          };
-        }
-      } catch (error) {
-        logger.error(`Error fetching user ${impersonateUser}: ${(error as Error).message}`);
-        return {
-          success: false,
-          error: `Error fetching user: ${(error as Error).message}`,
-        };
-      }
-
-      // 2. Discover mailboxes using Graph API mailbox permissions
-      try {
-        const impersonatedUserId = mailboxes[0]?.id;
-        const impersonatedUserEmail = impersonateUser.toLowerCase();
-        
-        // Query all users in the tenant
-        const usersResponse = await fetch(
-          'https://graph.microsoft.com/v1.0/users?$filter=userType eq \'Member\'&$select=id,displayName,userPrincipalName,mail&$top=100',
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
-
-        if (usersResponse.ok) {
-          const usersData = await usersResponse.json();
-          const users = usersData.value || [];
-          
-          logger.info(`Checking mailbox permissions for ${impersonateUser} across ${users.length} mailboxes...`);
-
-          // Limit concurrent requests to avoid throttling
-          const maxConcurrent = 5;
-          for (let i = 0; i < users.length; i += maxConcurrent) {
-            const batch = users.slice(i, i + maxConcurrent);
-            
-            await Promise.all(batch.map(async (user: any) => {
-              // Skip the impersonated user's own mailbox
-              if (user.id === impersonatedUserId) {
-                return;
-              }
-
-              try {
-                let hasAccess = false;
-                let accessType: 'shared' | 'delegated' = 'delegated';
-                const isSharedMailbox = user.userPrincipalName?.toLowerCase().includes('shared') || 
-                                       user.displayName?.toLowerCase().includes('shared') ||
-                                       user.mail?.toLowerCase().includes('shared');
-
-                // Strategy 1: Check calendar permissions (calendar delegate access)
-                try {
-                  const controller1 = new AbortController();
-                  const timeoutId1 = setTimeout(() => controller1.abort(), 5000);
-                  
-                  const calendarPermUrl = `https://graph.microsoft.com/v1.0/users/${user.id}/calendar/calendarPermissions`;
-                  const calendarPermResponse = await fetch(calendarPermUrl, {
-                    headers: {
-                      Authorization: `Bearer ${token}`,
-                    },
-                    signal: controller1.signal,
-                  });
-
-                  clearTimeout(timeoutId1);
-
-                  if (calendarPermResponse.ok) {
-                    const calendarPerms = await calendarPermResponse.json();
-                    if (calendarPerms.value) {
-                      const isCalendarDelegate = calendarPerms.value.some((perm: any) => 
-                        perm.emailAddress?.address?.toLowerCase() === impersonatedUserEmail
-                      );
-                      if (isCalendarDelegate) {
-                        hasAccess = true;
-                        accessType = 'delegated';
-                        logger.info(`Found calendar delegate: ${impersonateUser} → ${user.displayName}`);
-                      }
-                    }
-                  }
-                } catch (error: any) {
-                  if (error.name !== 'AbortError') {
-                    logger.debug(`Calendar permission check failed for ${user.displayName}: ${error.message}`);
-                  }
-                }
-
-                // Strategy 2: Check for shared mailbox membership
-                if (!hasAccess && isSharedMailbox) {
-                  logger.debug(`Checking if ${user.displayName} is a shared mailbox...`);
-                  try {
-                    const controller2 = new AbortController();
-                    const timeoutId2 = setTimeout(() => controller2.abort(), 5000);
-                    
-                    // Check mailbox type and membership
-                    const mailboxUrl = `https://graph.microsoft.com/v1.0/users/${user.id}?$select=mailboxSettings,assignedLicenses,accountEnabled`;
-                    const mailboxResponse = await fetch(mailboxUrl, {
-                      headers: {
-                        Authorization: `Bearer ${token}`,
-                      },
-                      signal: controller2.signal,
-                    });
-
-                    clearTimeout(timeoutId2);
-
-                    if (mailboxResponse.ok) {
-                      const mailboxData = await mailboxResponse.json();
-                      
-                      // Shared mailboxes typically have no licenses or are marked as resources
-                      const isLikelyShared = !mailboxData.assignedLicenses || 
-                                            mailboxData.assignedLicenses.length === 0;
-                      
-                      logger.debug(`${user.displayName} license check: ${isLikelyShared ? 'no licenses (likely shared)' : 'has licenses'}`);
-                      
-                      if (isLikelyShared) {
-                        // For shared mailboxes, check if user can access by querying members
-                        // Unfortunately Graph doesn't expose shared mailbox members directly
-                        // So we need to check if the impersonated user can read the mailbox
-                        
-                        // Check if mailbox has MailboxSettings indicating it's shared
-                        accessType = 'shared';
-                        // We'll validate access in Strategy 4
-                      }
-                    }
-                  } catch (error: any) {
-                    if (error.name !== 'AbortError') {
-                      logger.debug(`Shared mailbox check failed for ${user.displayName}: ${error.message}`);
-                    }
-                  }
-                }
-
-                // Strategy 3: Check SendAs permissions (mail delegate)
-                if (!hasAccess) {
-                  logger.debug(`Checking SendAs permissions for ${user.displayName}...`);
-                  try {
-                    const controller3 = new AbortController();
-                    const timeoutId3 = setTimeout(() => controller3.abort(), 5000);
-                    
-                    // Check if impersonated user has SendAs permission
-                    const sendAsUrl = `https://graph.microsoft.com/v1.0/users/${user.id}/sendAs`;
-                    const sendAsResponse = await fetch(sendAsUrl, {
-                      headers: {
-                        Authorization: `Bearer ${token}`,
-                      },
-                      signal: controller3.signal,
-                    });
-
-                    clearTimeout(timeoutId3);
-
-                    if (sendAsResponse.ok) {
-                      const sendAsData = await sendAsResponse.json();
-                      logger.debug(`SendAs data for ${user.displayName}: ${JSON.stringify(sendAsData)}`);
-                      if (sendAsData.value) {
-                        const hasSendAs = sendAsData.value.some((perm: any) => 
-                          perm.emailAddress?.toLowerCase() === impersonatedUserEmail ||
-                          perm.address?.toLowerCase() === impersonatedUserEmail
-                        );
-                        if (hasSendAs) {
-                          hasAccess = true;
-                          accessType = 'delegated';
-                          logger.info(`Found SendAs permission: ${impersonateUser} → ${user.displayName}`);
-                        }
-                      }
-                    } else {
-                      logger.debug(`SendAs check failed for ${user.displayName}: ${sendAsResponse.status}`);
-                    }
-                  } catch (error: any) {
-                    if (error.name !== 'AbortError') {
-                      logger.debug(`SendAs check error for ${user.displayName}: ${error.message}`);
-                    }
-                  }
-                }
-
-                // Strategy 4: For shared mailboxes, verify actual access
-                if (accessType === 'shared' && !hasAccess) {
-                  try {
-                    const controller4 = new AbortController();
-                    const timeoutId4 = setTimeout(() => controller4.abort(), 5000);
-                    
-                    // Try to access the mailbox's inbox to verify the impersonated user can access it
-                    // Check mailFolder permissions or message access
-                    const inboxUrl = `https://graph.microsoft.com/v1.0/users/${user.userPrincipalName || user.mail}/mailFolders/inbox?$select=id,displayName`;
-                    const inboxResponse = await fetch(inboxUrl, {
-                      headers: {
-                        Authorization: `Bearer ${token}`,
-                      },
-                      signal: controller4.signal,
-                    });
-
-                    clearTimeout(timeoutId4);
-
-                    if (inboxResponse.ok) {
-                      // If we can access the shared mailbox with service account,
-                      // we need additional verification that the impersonated user can too
-                      // For now, we'll assume shared mailboxes that are accessible indicate membership
-                      hasAccess = true;
-                      logger.info(`Found shared mailbox access: ${impersonateUser} → ${user.displayName}`);
-                    }
-                  } catch (error: any) {
-                    if (error.name !== 'AbortError') {
-                      logger.debug(`Shared mailbox access check failed for ${user.displayName}: ${error.message}`);
-                    }
-                  }
-                }
-
-                // Add to results if access detected
-                if (hasAccess) {
-                  mailboxes.push({
-                    id: user.id,
-                    type: accessType,
-                    displayName: user.displayName,
-                    email: user.userPrincipalName || user.mail,
-                    isPrimary: false,
-                  });
-                  logger.info(`${impersonateUser} has ${accessType} access to: ${user.displayName}`);
-                }
-              } catch (error: any) {
-                // Silently skip errors (timeout, permission denied, etc.)
-                if (error.name !== 'AbortError') {
-                  logger.debug(`Error checking ${user.displayName}: ${error.message}`);
-                }
-              }
-            }));
-          }
-        } else {
-          const errorText = await usersResponse.text();
-          logger.warn(`Could not query users: ${usersResponse.status} - ${errorText}`);
-        }
-      } catch (error) {
-        logger.warn(`Could not scan for mailbox permissions: ${(error as Error).message}`);
-      }
-
+      // Create temporary GraphClient for this CLI operation
+      const tempGraphClient = new GraphClient(this);
+      
+      // Use centralized discovery service
+      const service = new MailboxDiscoveryService(tempGraphClient);
+      const mailboxes = await service.discoverMailboxes(impersonateUser);
+      
+      // Format response for CLI/auth tool
       return {
         success: true,
         userEmail: impersonateUser,
-        mailboxes,
+        mailboxes: mailboxes.map(m => ({
+          id: m.id,
+          type: m.type,
+          displayName: m.displayName,
+          email: m.email,
+          isPrimary: m.type === 'personal',
+        })),
         note: mailboxes.length === 1 
           ? 'Only personal mailbox found. Delegate discovery requires MailboxSettings.Read and Calendars.Read permissions.' 
           : undefined,

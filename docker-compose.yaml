@@ -109,8 +109,7 @@ services:
       # Header name used for per-request impersonation (email/UPN). Only trust via a reverse proxy.
       MS365_MCP_IMPERSONATE_HEADER: ${MS365_MCP_IMPERSONATE_HEADER:-X-Impersonate-User}
       # Optional comma-separated list of additional mailboxes allowed for the impersonated user.
-      MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES: ${MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES:-}
-      # Cache TTL (seconds) for mailbox discovery/allowlist (Phase 0 uses env allowlist only).
+      # Mailbox discovery cache TTL (seconds)
       MS365_MCP_IMPERSONATE_CACHE_TTL: ${MS365_MCP_IMPERSONATE_CACHE_TTL:-3600}
       # Rewrite /me → /users/{impersonated} in app-permissions mode to avoid Graph 400s.
       MS365_MCP_IMPERSONATE_REWRITE_ME: ${MS365_MCP_IMPERSONATE_REWRITE_ME:-true}

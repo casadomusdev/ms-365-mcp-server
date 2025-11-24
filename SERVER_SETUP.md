@@ -118,6 +118,9 @@ Choose the permission set based on your authentication mode:
 **User:**
 - `User.Read.All`
 
+**Mailbox Settings (Required for Impersonation & Shared Mailbox Discovery):**
+- `MailboxSettings.Read`
+
 **Tasks:**
 - `Tasks.Read.All`
 - `Tasks.ReadWrite.All`

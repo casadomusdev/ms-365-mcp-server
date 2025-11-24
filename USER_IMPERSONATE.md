@@ -1,397 +1,124 @@
-# User Impersonation Implementation Plan
+# User Impersonation & Mailbox Discovery
 
 ## Overview
 
-This document outlines the implementation plan for adding user impersonation capabilities to the MS-365 MCP Server when running in **Client Credentials Mode**. User impersonation allows the server to restrict access to only those mailboxes/calendars/files that a specific user has permission to access, even though the server has app-level permissions to the entire tenant.
+When running with **application permissions** (client credentials mode), the MS-365 MCP Server has tenant-wide access. User impersonation allows you to:
 
-## Use Cases
+- **Scope operations** to a specific user's mailbox context
+- **Automatically discover** accessible mailboxes (personal, shared, delegated)
+- **Enforce access control** to prevent unauthorized mailbox access  
+- **Support multi-tenant** scenarios with per-request user context
+- **Cache discovery results** for optimal performance
 
-1. **Multi-tenant SaaS Application**: Different end-users accessing the MCP server should only see their own data
-2. **Delegated Access Control**: Enforce user-level permissions even with app-level authentication
-3. **Compliance & Auditing**: Track which user's context is being used for each operation
-4. **Development & Testing**: Test different permission scenarios without changing app configuration
+## How It Works
 
-## Feature Modes
+### Impersonation Resolution
 
-### Mode 1: Static User Impersonation (Environment Variable)
+The server resolves which user to impersonate using a 3-tier priority system:
 
-**Configuration**: Set `MS365_MCP_IMPERSONATE_USER=user@domain.com` in `.env`
+| Priority | Source | Configuration | Use Case |
+|----------|--------|---------------|----------|
+| **1** | HTTP Header | `MS365_MCP_IMPERSONATE_HEADER` | Per-request dynamic impersonation via reverse proxy |
+| **2** | AsyncLocalStorage | Internal context | Set by middleware/internal logic |
+| **3** | Environment Variable | `MS365_MCP_IMPERSONATE_USER` | Static server-wide impersonation |
 
-**Behavior**:
-- Server starts and discovers mailboxes accessible to the specified user
-- All operations are restricted to this user's access scope
-- Impersonated user remains the same for the lifetime of the server
-- Requires server restart to change impersonated user
-
-**Best for**:
-- Single-user deployments
-- Development and testing
-- Simple setups where one service account's permissions are sufficient
-
-### Mode 2: Dynamic User Impersonation (HTTP Header)
-
-**Configuration**: Set `MS365_MCP_IMPERSONATE_HEADER=X-Impersonate-User` in `.env`
-
-**Behavior**:
-- Server reads the specified HTTP header from each incoming request
-- Mailbox discovery is performed on-demand and cached per user
-- Each request can impersonate a different user
-- No server restart needed to change users
-
-**Best for**:
-- Multi-tenant applications
-- Per-request user context
-- Integration with reverse proxies/API gateways that set user headers
-- Dynamic permission enforcement
-
-### Mode 3: Hybrid (Both Modes)
-
-**Configuration**: Set both environment variables
-
-**Behavior**:
-- HTTP header takes precedence if present
-- Falls back to env var user if header is missing
-- Allows default user with per-request override capability
-
-## Technical Architecture
-
-### 1. Mailbox Discovery & Caching
-
-**Discovery Process**:
-
-When an impersonated user is specified, the server needs to discover which mailboxes they can access:
-
-```typescript
-interface UserMailboxCache {
-  userEmail: string;
-  discoveredAt: number;          // Timestamp
-  expiresAt: number;             // TTL for cache
-  allowedMailboxes: MailboxInfo[];
-}
-
-interface MailboxInfo {
-  id: string;
-  email: string;
-  displayName: string;
-  type: 'personal' | 'shared' | 'delegated';
-  permissions: string[];         // e.g., ['read', 'write', 'send']
-}
+**Resolution Flow:**
+```
+Request → Check HTTP Header → Check Context → Check Env Var → Use First Found
 ```
 
-**Discovery Methods**:
+### Mailbox Discovery
 
-1. **Personal Mailbox**: `/users/{email}` - Always accessible
-2. **Delegated Mailboxes**: `/users/{email}/mailFolders` - Check for FullAccess/SendAs permissions
-3. **Shared Mailboxes**: Query `/users/{email}/mailSettings` - Check for delegate access
-4. **Group Memberships**: `/users/{email}/memberOf` - Check for group-based shared mailboxes
-5. **Application-level Query**: Use app permissions to query `/users` and test access
+Once a user is identified for impersonation, the server automatically discovers which mailboxes they can access using a sophisticated 4-strategy approach:
 
-**Caching Strategy**:
+**Strategy 1: Calendar Permissions**
+- Checks `/calendar/calendarPermissions` endpoint
+- Detects users with calendar delegate access
 
-```typescript
-class MailboxDiscoveryCache {
-  private cache: Map<string, UserMailboxCache>;
-  private cacheTTL: number; // Default: 1 hour
-  
-  async getMailboxes(userEmail: string): Promise<MailboxInfo[]> {
-    const cached = this.cache.get(userEmail);
-    
-    // Return cached if valid
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.allowedMailboxes;
-    }
-    
-    // Discover mailboxes
-    const mailboxes = await this.discoverMailboxes(userEmail);
-    
-    // Cache results
-    this.cache.set(userEmail, {
-      userEmail,
-      discoveredAt: Date.now(),
-      expiresAt: Date.now() + this.cacheTTL,
-      allowedMailboxes: mailboxes
-    });
-    
-    return mailboxes;
-  }
-  
-  private async discoverMailboxes(userEmail: string): Promise<MailboxInfo[]> {
-    // Implementation of discovery logic
-  }
-}
-```
+**Strategy 2: Shared Mailbox Detection** 
+- Identifies mailboxes with "shared" in name/email
+- Verifies no assigned licenses (typical for shared mailboxes)
 
-### 2. Access Validation Layer
+**Strategy 3: SendAs Permissions**
+- Checks `/sendAs` endpoint
+- Detects users with mail delegation (SendAs/SendOnBehalf)
 
-**Validation Point**: Before every Graph API call
+**Strategy 4: Mailbox Access Verification**
+- Tests actual mailbox access by querying inbox
+- Confirms Full Access permissions
 
-**Validation Logic**:
+### Caching Architecture
 
-```typescript
-class AccessValidator {
-  private cacheManager: MailboxDiscoveryCache;
-  
-  async validateMailboxAccess(
-    impersonatedUser: string,
-    targetMailbox: string,
-    operation: 'read' | 'write' | 'send'
-  ): Promise<boolean> {
-    // Get allowed mailboxes for this user
-    const allowedMailboxes = await this.cacheManager.getMailboxes(impersonatedUser);
-    
-    // Find the target mailbox
-    const mailbox = allowedMailboxes.find(
-      mb => mb.email.toLowerCase() === targetMailbox.toLowerCase() ||
-            mb.id === targetMailbox
-    );
-    
-    if (!mailbox) {
-      logger.warn(`User ${impersonatedUser} denied access to ${targetMailbox}`);
-      return false;
-    }
-    
-    // Check if user has required permission
-    if (!mailbox.permissions.includes(operation)) {
-      logger.warn(
-        `User ${impersonatedUser} lacks ${operation} permission for ${targetMailbox}`
-      );
-      return false;
-    }
-    
-    return true;
-  }
-}
-```
+**Two-Layer Caching System:**
 
-### 3. Request Context Management
+1. **User Validation Cache** (Optional)
+   - Validates user exists before impersonation
+   - TTL: `MS365_MCP_USER_VALIDATION_TTL` (default: 1 hour)
+   - Prevents typos and invalid email addresses
 
-**HTTP Mode Request Processing**:
+2. **Mailbox Discovery Cache**  
+   - Caches discovered mailboxes per user
+   - TTL: `MS365_MCP_IMPERSONATE_CACHE_TTL` (default: 1 hour)
+   - Dramatically improves performance (10ms vs 2-10 seconds)
 
-```typescript
-class ImpersonationContext {
-  private static asyncLocalStorage = new AsyncLocalStorage<string>();
-  
-  static setImpersonatedUser(email: string): void {
-    this.asyncLocalStorage.enterWith(email);
-  }
-  
-  static getImpersonatedUser(): string | undefined {
-    return this.asyncLocalStorage.getStore();
-  }
-  
-  static withUser<T>(email: string, fn: () => Promise<T>): Promise<T> {
-    return this.asyncLocalStorage.run(email, fn);
-  }
-}
-```
+## Configuration
 
-**HTTP Server Middleware** (for HTTP mode):
-
-```typescript
-// In HTTP server handler
-app.use((req, res, next) => {
-  const impersonateHeader = process.env.MS365_MCP_IMPERSONATE_HEADER;
-  const staticUser = process.env.MS365_MCP_IMPERSONATE_USER;
-  
-  let impersonatedUser: string | undefined;
-  
-  // Priority: HTTP header > static env var
-  if (impersonateHeader && req.headers[impersonateHeader.toLowerCase()]) {
-    impersonatedUser = req.headers[impersonateHeader.toLowerCase()] as string;
-  } else if (staticUser) {
-    impersonatedUser = staticUser;
-  }
-  
-  if (impersonatedUser) {
-    ImpersonationContext.setImpersonatedUser(impersonatedUser);
-    logger.info(`Request impersonating user: ${impersonatedUser}`);
-  }
-  
-  next();
-});
-```
-
-### 4. Integration with Tool Calls
-
-**Modify Tool Execution**:
-
-Every tool that accesses mailboxes/calendars/files needs validation:
-
-```typescript
-// Example: list-mail-messages tool
-async function listMailMessages(params: {
-  mailbox?: string;
-  folder: string;
-  max_results: number;
-}) {
-  const impersonatedUser = ImpersonationContext.getImpersonatedUser();
-  
-  // If impersonation is active, validate access
-  if (impersonatedUser) {
-    const targetMailbox = params.mailbox || impersonatedUser;
-    
-    const hasAccess = await accessValidator.validateMailboxAccess(
-      impersonatedUser,
-      targetMailbox,
-      'read'
-    );
-    
-    if (!hasAccess) {
-      throw new Error(
-        `Access denied: User ${impersonatedUser} cannot read mailbox ${targetMailbox}`
-      );
-    }
-  }
-  
-  // Proceed with Graph API call
-  // ...
-}
-```
-
-## Implementation Steps
-
-### Phase 1: Core Infrastructure
-
-**Files to Create/Modify**:
-
-1. **src/impersonation/MailboxDiscoveryCache.ts** (NEW)
-   - Mailbox discovery logic
-   - Cache management
-   - TTL handling
-
-2. **src/impersonation/AccessValidator.ts** (NEW)
-   - Access validation logic
-   - Permission checking
-   - Logging
-
-3. **src/impersonation/ImpersonationContext.ts** (NEW)
-   - AsyncLocalStorage for request context
-   - Context management utilities
-
-4. **src/impersonation/index.ts** (NEW)
-   - Export all impersonation classes
-
-### Phase 2: AuthManager Integration
-
-**Files to Modify**:
-
-1. **src/auth.ts**
-   - Add impersonation configuration properties
-   - Initialize MailboxDiscoveryCache
-   - Add method: `async discoverUserMailboxes(email: string)`
-   - Add method: `async validateAccess(user, mailbox, operation)`
-
-### Phase 3: HTTP Server Integration
-
-**Files to Modify**:
-
-1. **src/server.ts**
-   - Add HTTP middleware for header extraction
-   - Set up ImpersonationContext
-   - Log impersonation info
-
-2. **src/index.ts**
-   - Log impersonation mode at startup
-   - Initialize AccessValidator
-
-### Phase 4: Tool Integration
-
-**Files to Modify**:
-
-All tool implementation files need validation checks:
-
-1. **src/tools/mail.ts**
-   - Add validation before Graph API calls
-   - Handle access denied errors
-
-2. **src/tools/calendar.ts**
-   - Add validation for calendar access
-
-3. **src/tools/files.ts**
-   - Add validation for OneDrive/SharePoint access
-
-4. **Other tool files**
-   - Apply same pattern
-
-### Phase 5: Configuration & Documentation
-
-**Files to Create/Modify**:
-
-1. **.env.example**
-   - Add `MS365_MCP_IMPERSONATE_USER`
-   - Add `MS365_MCP_IMPERSONATE_HEADER`
-   - Add `MS365_MCP_IMPERSONATE_CACHE_TTL`
-
-2. **SERVER_SETUP.md**
-   - Add "User Impersonation" section
-   - Document both modes
-   - Provide configuration examples
-   - Security considerations
-
-3. **README.md**
-   - Update feature list
-   - Add impersonation examples
-
-### Phase 6: Testing
-
-**Test Scenarios**:
-
-1. **Static Impersonation Tests**
-   - Verify mailbox discovery works
-   - Test access validation (allow/deny)
-   - Test cache expiration and refresh
-
-2. **Dynamic Impersonation Tests**
-   - Test header parsing
-   - Test per-request user switching
-   - Test fallback to static user
-
-3. **Edge Cases**
-   - Invalid user email
-   - User with no mailbox access
-   - Missing user in Azure AD
-   - Expired cache handling
-
-4. **Performance Tests**
-   - Cache hit rate
-   - Discovery performance
-   - Validation overhead
-
-## Configuration Reference
-
-### Environment Variables
+### Required for Impersonation
 
 ```bash
-# Static user impersonation (optional)
-MS365_MCP_IMPERSONATE_USER=user@domain.com
+# Enable client credentials mode (app permissions)
+MS365_MCP_CLIENT_SECRET=your-client-secret
+MS365_MCP_TENANT_ID=your-tenant-id
 
-# Dynamic user impersonation via HTTP header (optional)
-# Header name is case-insensitive
-MS365_MCP_IMPERSONATE_HEADER=X-Impersonate-User
+# Specify the user to impersonate
+MS365_MCP_IMPERSONATE_USER=user@company.com
+```
 
-# Cache TTL in seconds (default: 3600 = 1 hour)
+### Optional Configuration
+
+```bash
+# Mailbox discovery cache TTL (default: 3600 seconds)
 MS365_MCP_IMPERSONATE_CACHE_TTL=3600
 
-# Enable verbose impersonation logging (default: false)
+# Enable user validation before impersonation (default: false)
+MS365_MCP_VALIDATE_IMPERSONATION_USER=true
+
+# User validation cache TTL (default: 3600 seconds)  
+MS365_MCP_USER_VALIDATION_TTL=3600
+
+# Custom header name for dynamic impersonation (default: X-Impersonate-User)
+MS365_MCP_IMPERSONATE_HEADER=X-Impersonate-User
+
+# Enable `/me` rewriting to `/users/{email}` (default: true)
+MS365_MCP_IMPERSONATE_REWRITE_ME=true
+
+# Enable debug logging (default: false)
 MS365_MCP_IMPERSONATE_DEBUG=true
 ```
 
-### Usage Examples
+## Usage Modes
 
-**Example 1: Static Impersonation**
+### Mode 1: Static Impersonation
+
+**Best for:** Single-user deployments, development, testing
 
 ```bash
 # .env
 MS365_MCP_CLIENT_SECRET=your-secret
-MS365_MCP_IMPERSONATE_USER=john.doe@company.com
-
-# Server restricts all operations to john.doe@company.com's access scope
+MS365_MCP_IMPERSONATE_USER=support@company.com
 ```
 
-**Example 2: Dynamic Impersonation**
+**Behavior:**
+- Server discovers mailboxes at startup
+- All requests use this user's context
+- Requires server restart to change user
+
+### Mode 2: Dynamic Impersonation
+
+**Best for:** Multi-tenant applications, per-request user context
 
 ```bash
-# .env
+# .env  
 MS365_MCP_CLIENT_SECRET=your-secret
 MS365_MCP_IMPERSONATE_HEADER=X-User-Email
 ```
@@ -400,385 +127,413 @@ MS365_MCP_IMPERSONATE_HEADER=X-User-Email
 # HTTP Request
 curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -H "X-User-Email: jane.smith@company.com" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-mail-messages","arguments":{"folder":"inbox"}}}'
-
-# Server impersonates jane.smith@company.com for this request
+  -H "X-User-Email: jane@company.com" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",...}'
 ```
 
-**Example 3: Hybrid Mode**
+**Behavior:**
+- Each request can specify a different user
+- Mailbox discovery cached per user
+- No server restart needed
+
+### Mode 3: Hybrid
+
+**Best for:** Default user with override capability
 
 ```bash
 # .env
 MS365_MCP_CLIENT_SECRET=your-secret
-MS365_MCP_IMPERSONATE_USER=default.user@company.com
+MS365_MCP_IMPERSONATE_USER=default@company.com  
 MS365_MCP_IMPERSONATE_HEADER=X-User-Email
-
-# Default: uses default.user@company.com
-# With header: uses header value
-# Without header: falls back to default.user@company.com
 ```
 
-### Reverse Proxy Integration
+**Behavior:**
+- HTTP header takes precedence if present
+- Falls back to env var if header missing
+- Best of both worlds
 
-**NGINX Example**:
+## Architecture
 
-```nginx
-location /mcp {
-    # Extract authenticated user from session/JWT/etc
-    # and pass as header to MCP server
-    
-    proxy_set_header X-Impersonate-User $authenticated_user_email;
-    proxy_pass http://ms365-mcp-server:3000;
-}
+### Service Components
+
+```
+ImpersonationResolver
+├─> UserValidationCache (optional)
+│   └─> GraphClient (validates user existence)
+└─> Validates email format
+
+MailboxDiscoveryCache
+└─> MailboxDiscoveryService
+    ├─> Strategy 1: Calendar Permissions
+    ├─> Strategy 2: Shared Mailbox Detection
+    ├─> Strategy 3: SendAs Permissions  
+    └─> Strategy 4: Mailbox Access Verification
 ```
 
-**Traefik Example**:
+### Data Flow
 
-```yaml
-http:
-  middlewares:
-    add-user-header:
-      headers:
-        customRequestHeaders:
-          X-Impersonate-User: "user@domain.com"
+```
+1. Request arrives
+2. ImpersonationResolver determines user (header > context > env)
+3. Optional: UserValidationCache validates user exists
+4. MailboxDiscoveryCache.getMailboxes(user)
+   ├─> Cache hit? Return cached mailboxes (< 10ms)
+   └─> Cache miss? Run MailboxDiscoveryService (2-10 seconds)
+       ├─> Personal mailbox (always included)
+       ├─> Strategy 1: Calendar delegates
+       ├─> Strategy 2: Shared mailboxes
+       ├─> Strategy 3: SendAs permissions
+       ├─> Strategy 4: Access verification
+       └─> Cache results with TTL
+5. Tool executes with allowed mailboxes enforced
+```
+
+### Discovered Mailbox Types
+
+**Personal Mailbox**
+- User's own mailbox
+- Always included
+- Type: `'personal'`
+
+**Shared Mailbox**
+- Multi-user shared mailbox  
+- No license assigned
+- Type: `'shared'`
+
+**Delegated Mailbox** 
+- Another user's mailbox
+- Access via delegation
+- Type: `'delegated'`
+
+## User Validation (Optional)
+
+Enable to catch configuration errors early:
+
+```bash
+MS365_MCP_VALIDATE_IMPERSONATION_USER=true
+```
+
+### Validation Process
+
+1. **Format check**: Email regex validation
+2. **Existence check**: Query `/users/{email}` endpoint
+3. **Cache result**: Store for `MS365_MCP_USER_VALIDATION_TTL`
+4. **Throw on failure**: Clear error with source information
+
+### Error Examples
+
+```
+# Invalid format
+Impersonation failed (source: environment variable 'MS365_MCP_IMPERSONATE_USER'): 
+Invalid email format: 'not-an-email'
+
+# User not found
+Impersonation failed (source: HTTP header 'x-impersonate-user'): 
+User not found: nonexistent@company.com
 ```
 
 ## Security Considerations
 
-### 1. Header Spoofing Prevention
+### HTTP Header Trust
 
-**Problem**: Malicious clients could set impersonation headers
+⚠️ **Critical**: Only trust impersonation headers from a reverse proxy you control
 
-**Solutions**:
-- **Option A**: Only allow impersonation headers from trusted reverse proxy
-  - Configure allowed proxy IPs
-  - Strip headers from direct client connections
-  
-- **Option B**: Require authentication at reverse proxy level
-  - Reverse proxy validates user identity
-  - Only proxy sets trusted headers
-  
-- **Option C**: Use signed headers
-  - Proxy signs header with shared secret
-  - MCP server verifies signature
+**Recommended setup:**
 
-**Recommended Implementation**:
+```nginx
+# NGINX - Only accept header from authenticated source
+location /mcp {
+    # Authenticate user first
+    auth_request /auth;
+    
+    # Set impersonation header from auth result
+    auth_request_set $user_email $upstream_http_x_user_email;
+    proxy_set_header X-Impersonate-User $user_email;
+    
+    # Strip any client-provided header
+    proxy_set_header X-Impersonate-User-Client "";
+    
+    proxy_pass http://ms365-mcp-server:3000;
+}
+```
+
+### Audit Logging
+
+All impersonation context is logged:
 
 ```typescript
-// Only trust headers from specific source IPs
-const TRUSTED_PROXIES = process.env.TRUSTED_PROXY_IPS?.split(',') || [];
+// Automatically logged at debug level
+{
+  "impersonatedUser": "user@company.com",
+  "source": "http-header", // or "environment" or "context"
+  "mailboxesDiscovered": 3,
+  "cacheHit": false
+}
+```
 
-function validateImpersonationHeader(req: Request): string | undefined {
-  const impersonateHeader = process.env.MS365_MCP_IMPERSONATE_HEADER;
-  if (!impersonateHeader) return undefined;
-  
-  const clientIP = req.socket.remoteAddress;
-  
-  // If trusted proxies configured, only accept headers from them
-  if (TRUSTED_PROXIES.length > 0) {
-    if (!TRUSTED_PROXIES.includes(clientIP)) {
-      logger.warn(
-        `Rejecting impersonation header from untrusted IP: ${clientIP}`
-      );
-      return undefined;
+## Performance
+
+### Initial Discovery
+
+- **First request**: 2-10 seconds (depends on tenant size)
+- **Concurrent limit**: 5 simultaneous API calls
+- **Timeout**: 5 seconds per mailbox check
+- **Tenant size impact**: ~50-100 users scanned
+
+### Cached Lookups
+
+- **Cache hit**: < 10ms
+- **TTL**: Configurable (default 1 hour)
+- **Memory**: ~1KB per cached user
+
+### Optimization Tips
+
+```bash
+# Increase cache TTL to reduce discovery frequency
+MS365_MCP_IMPERSONATE_CACHE_TTL=7200  # 2 hours
+
+# Reduce if permissions change frequently
+MS365_MCP_IMPERSONATE_CACHE_TTL=1800  # 30 minutes
+```
+
+## Troubleshooting
+
+### No Shared Mailboxes Discovered
+
+**Symptom:** Only personal mailbox found
+
+**Causes:**
+1. User has no actual delegate access
+2. Missing Graph API permissions
+3. Discovery strategies timing out
+
+**Solution:**
+
+First, verify all required Graph API permissions are granted in Azure AD:
+
+**Required Application Permissions (Client Credentials Mode):**
+- `Mail.Read` - Read mail in all mailboxes (Strategy 4: access verification)
+- `Calendars.Read` - Read calendars (Strategy 1: calendar delegation check)
+- `MailboxSettings.Read` - Read mailbox settings (Strategy 3: SendAs permissions)
+- `User.Read.All` - Read all users (Strategy 2: shared mailbox detection, user validation)
+
+These permissions are all marked as **required** in SERVER_SETUP.md. Without them, discovery strategies will fail silently and fewer mailboxes will be discovered.
+
+Then enable debug logging to see which strategies are working:
+
+```bash
+MS365_MCP_LOG_LEVEL=debug
+MS365_MCP_IMPERSONATE_DEBUG=true
+```
+
+### Discovery Too Slow
+
+**Symptom:** Initial requests take > 10 seconds
+
+**Causes:**
+1. Large tenant (many users)
+2. Network latency
+3. Graph API throttling
+
+**Solutions:**
+```bash
+# Increase cache TTL  
+MS365_MCP_IMPERSONATE_CACHE_TTL=7200
+
+# Note: First request will always be slow
+# Subsequent requests use cache (< 10ms)
+```
+
+### Cache Not Working
+
+**Symptom:** Every request triggers discovery
+
+**Diagnosis:**
+```bash
+# Enable debug to see cache hits/misses
+MS365_MCP_DEBUG=true
+MS365_MCP_IMPERSONATE_DEBUG=true
+
+# Look for in logs:
+# "Cache hit for user@company.com (age: 120s)"
+# vs
+# "Cache miss for user@company.com, discovering..."
+```
+
+**Solutions:**
+```bash
+# Ensure consistent email format (lowercase)
+MS365_MCP_IMPERSONATE_USER=user@company.com  # not User@Company.com
+
+# Increase TTL
+MS365_MCP_IMPERSONATE_CACHE_TTL=3600
+
+# Check container isn't restarting (clears memory cache)
+docker logs ms365-mcp-server
+```
+
+### Validation Errors
+
+**Symptom:** "User not found" errors
+
+**Solutions:**
+```bash
+# Verify user exists
+./auth-list-mailboxes.sh
+
+# Disable validation temporarily
+MS365_MCP_VALIDATE_IMPERSONATION_USER=false
+
+# Check for typos
+MS365_MCP_IMPERSONATE_USER=correct.email@company.com
+```
+
+## CLI Tools
+
+### List Mailboxes for Impersonated User
+
+```bash
+# Shows discovered mailboxes
+./auth-list-mailboxes.sh
+```
+
+**Example output:**
+```json
+{
+  "success": true,
+  "userEmail": "user@company.com",
+  "mailboxes": [
+    {
+      "id": "user-id-123",
+      "type": "personal",
+      "displayName": "John Doe",
+      "email": "user@company.com",
+      "isPrimary": true
+    },
+    {
+      "id": "shared-id-456",
+      "type": "shared",
+      "displayName": "Support Mailbox",
+      "email": "support@company.com",
+      "isPrimary": false
     }
-  }
-  
-  return req.headers[impersonateHeader.toLowerCase()] as string;
-}
-```
-
-### 2. Audit Logging
-
-Log all impersonation activities:
-
-```typescript
-logger.info({
-  event: 'impersonation_access',
-  impersonatedUser: 'user@domain.com',
-  targetResource: 'mailbox:other@domain.com',
-  operation: 'read',
-  result: 'allowed',
-  timestamp: new Date().toISOString()
-});
-```
-
-### 3. Permission Caching
-
-**Risk**: User permissions change but cache is stale
-
-**Mitigations**:
-- Configurable TTL (default: 1 hour)
-- Manual cache invalidation endpoint
-- Monitor for permission changes via webhooks
-- Shorter TTL for sensitive operations
-
-### 4. Rate Limiting
-
-**Risk**: Discovery process can be expensive
-
-**Mitigations**:
-- Rate limit mailbox discovery per user
-- Implement request throttling
-- Monitor for abuse patterns
-
-## Performance Optimization
-
-### 1. Lazy Discovery
-
-Don't discover all mailboxes upfront - discover on-demand:
-
-```typescript
-async validateAccess(user, mailbox, operation) {
-  // Check if we've already discovered this specific mailbox
-  if (this.hasMailboxInCache(user, mailbox)) {
-    return this.validateFromCache(user, mailbox, operation);
-  }
-  
-  // Discover just this mailbox
-  const hasAccess = await this.discoverSingleMailbox(user, mailbox);
-  this.cacheMailbox(user, mailbox, hasAccess);
-  
-  return hasAccess;
-}
-```
-
-### 2. Batch Discovery
-
-When discovery is needed, batch Graph API calls:
-
-```typescript
-// Use $batch endpoint to reduce round trips
-const batch = {
-  requests: [
-    { id: '1', method: 'GET', url: `/users/${email}` },
-    { id: '2', method: 'GET', url: `/users/${email}/mailFolders?$top=1` },
-    { id: '3', method: 'GET', url: `/users/${email}/memberOf` }
   ]
-};
-```
-
-### 3. Background Refresh
-
-Refresh cache in background before expiration:
-
-```typescript
-setInterval(async () => {
-  const expiringCache = this.getExpiringCache(threshold: 5 * 60 * 1000); // 5 min
-  
-  for (const userEmail of expiringCache) {
-    await this.refreshMailboxCache(userEmail);
-  }
-}, 60000); // Check every minute
-```
-
-## Error Handling
-
-### Access Denied Scenarios
-
-**Error Response Format**:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "error": {
-    "code": -32000,
-    "message": "Access denied: User john@company.com cannot access mailbox jane@company.com",
-    "data": {
-      "impersonatedUser": "john@company.com",
-      "requestedMailbox": "jane@company.com",
-      "reason": "mailbox_not_accessible"
-    }
-  }
 }
 ```
 
-### Invalid User
+### Verify Authentication
 
-```json
+```bash
+# Tests authentication and impersonation setup
+./auth-verify.sh
+```
+
+## Examples
+
+### Basic Setup
+
+```bash
+# .env
+MS365_MCP_CLIENT_ID=your-app-id
+MS365_MCP_CLIENT_SECRET=your-secret
+MS365_MCP_TENANT_ID=your-tenant-id
+MS365_MCP_IMPERSONATE_USER=support@company.com
+```
+
+### With Validation
+
+```bash
+# Validate user before allowing impersonation
+MS365_MCP_VALIDATE_IMPERSONATION_USER=true
+MS365_MCP_USER_VALIDATION_TTL=3600
+```
+
+### Multi-Tenant SaaS
+
+```bash
+# Reverse proxy sets user header per request
+MS365_MCP_IMPERSONATE_HEADER=X-Authenticated-User
+
+# Each request operates in different user context
+# Headers: {"X-Authenticated-User": "tenant1@company.com"}
+# Headers: {"X-Authenticated-User": "tenant2@company.com"}
+```
+
+### Debug Discovery
+
+```bash
+# See full discovery process
+MS365_MCP_LOG_LEVEL=debug
+MS365_MCP_DEBUG=true
+MS365_MCP_IMPERSONATE_DEBUG=true
+
+# Run and check logs
+docker-compose up
+```
+
+## Migration from Phase 0
+
+If you were using the old `MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES` variable:
+
+**Old configuration:**
+```bash
+MS365_MCP_IMPERSONATE_USER=user@company.com
+MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES=shared1@company.com,shared2@company.com
+```
+
+**New (automatic discovery):**
+```bash
+MS365_MCP_IMPERSONATE_USER=user@company.com
+# No allowlist needed - mailboxes are automatically discovered!
+```
+
+**Benefits of new approach:**
+- Automatic discovery - no manual configuration
+- Always up-to-date as permissions change
+- Discovers all accessible mailboxes, not just configured ones
+- Validates actual access, not just configuration
+
+## API Reference
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MS365_MCP_IMPERSONATE_USER` | - | Email of user to impersonate |
+| `MS365_MCP_IMPERSONATE_HEADER` | `X-Impersonate-User` | Header name for dynamic impersonation |
+| `MS365_MCP_IMPERSONATE_CACHE_TTL` | `3600` | Mailbox discovery cache TTL (seconds) |
+| `MS365_MCP_VALIDATE_IMPERSONATION_USER` | `false` | Enable user validation |
+| `MS365_MCP_USER_VALIDATION_TTL` | `3600` | User validation cache TTL (seconds) |
+| `MS365_MCP_IMPERSONATE_REWRITE_ME` | `true` | Rewrite `/me` to `/users/{email}` |
+| `MS365_MCP_IMPERSONATE_DEBUG` | `false` | Enable impersonation debug logging |
+
+### Cache Statistics
+
+Access via internal API (development mode):
+
+```typescript
+// Get cache stats
+const stats = mailboxDiscoveryCache.getCacheStats();
+
+// Returns:
 {
-  "error": {
-    "code": -32001,
-    "message": "Invalid impersonated user: user@domain.com not found in Azure AD",
-    "data": {
-      "impersonatedUser": "user@domain.com",
-      "reason": "user_not_found"
+  size: 5,  
+  entries: [
+    {
+      email: "user@company.com",
+      mailboxCount: 3,
+      age: 120,        // seconds since cached
+      expiresIn: 3480  // seconds until expiry
     }
-  }
+  ]
 }
+
+// Clear cache
+mailboxDiscoveryCache.clearCache();
 ```
 
-## Monitoring & Metrics
+## See Also
 
-### Key Metrics to Track
-
-1. **Cache Performance**
-   - Hit rate
-   - Miss rate
-   - Eviction rate
-
-2. **Discovery Performance**
-   - Discovery latency (p50, p95, p99)
-   - Number of discoveries per minute
-   - Failed discoveries
-
-3. **Access Validation**
-   - Validation latency
-   - Access denied rate by user
-   - Access granted rate by user
-
-4. **User Activity**
-   - Unique impersonated users per hour/day
-   - Most active users
-   - Mailbox access patterns
-
-## Migration Path
-
-### For Existing Deployments
-
-**Step 1**: Deploy impersonation code (disabled by default)
-```bash
-# No env vars set - impersonation disabled
-# All existing functionality works as before
-```
-
-**Step 2**: Test with static impersonation
-```bash
-MS365_MCP_IMPERSONATE_USER=test.user@domain.com
-# Test mailbox discovery and validation
-```
-
-**Step 3**: Enable dynamic impersonation
-```bash
-MS365_MCP_IMPERSONATE_HEADER=X-User-Email
-# Test with different users via headers
-```
-
-**Step 4**: Deploy to production with monitoring
-```bash
-# Enable with conservative cache TTL
-MS365_MCP_IMPERSONATE_CACHE_TTL=300  # 5 minutes initially
-MS365_MCP_IMPERSONATE_DEBUG=true      # Verbose logging initially
-```
-
-## Future Enhancements
-
-### 1. Permission-Based Filtering
-
-Instead of all-or-nothing, filter results based on permissions:
-
-```typescript
-// Return only mailboxes user can read
-const mailboxes = await getAllMailboxes();
-return mailboxes.filter(mb => userHasPermission(user, mb, 'read'));
-```
-
-### 2. Delegation Chains
-
-Support impersonation chains (admin -> service account -> end user):
-
-```typescript
-MS365_MCP_IMPERSONATION_CHAIN=admin@domain.com,service@domain.com
-X-Impersonate-User: end.user@domain.com
-// Validate: admin can impersonate service, service can access end user's mailbox
-```
-
-### 3. Temporary Access Grants
-
-Time-limited access to specific mailboxes:
-
-```typescript
-// Grant jane temporary access to john's inbox for 1 hour
-grantTemporaryAccess('jane@domain.com', 'john@domain.com:inbox', duration: 3600);
-```
-
-### 4. Impersonation Audit Dashboard
-
-Web UI showing:
-- Who is impersonating whom
-- Access patterns
-- Denied access attempts
-- Cache statistics
-
-## Summary
-
-The user impersonation feature provides:
-
-✅ **Flexibility**: Static env var or dynamic HTTP header
-✅ **Security**: Enforces user-level permissions with app-level auth
-✅ **Performance**: Smart caching with configurable TTL
-✅ **Compatibility**: Works in both STDIO and HTTP modes
-✅ **Scalability**: Designed for multi-tenant scenarios
-✅ **Auditability**: Comprehensive logging and metrics
-
-**When to Use**:
-- Multi-tenant SaaS applications
-- Compliance requirements for user-level access control
-- Testing different permission scenarios
-- Integrating with existing authentication systems
-
-**Trade-offs**:
-- Adds complexity to authentication flow
-- Requires additional Graph API calls for discovery
-- Cache management overhead
-- Need to handle permission changes
-
-## Implementation Details (Phase 0: Env-driven impersonation, header-ready)
-
-### Summary
-- Impersonation is resolved per request using the following priority:
-  1) HTTP header `X-Impersonate-User` (email/UPN), if present and trusted
-  2) Environment variable `MS365_MCP_IMPERSONATE_USER` (email/UPN)
-  3) If neither is available, impersonation is disabled for that request
-- When impersonation is resolved and the server runs with application permissions, `/me/...` is transparently rewritten to `/users/{impersonated}/...` to avoid Graph 400 errors.
-- Tools only operate on the allowed mailbox set:
-  - Strict default: only the impersonated mailbox
-  - Optional allowlist via `MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES` (comma-separated emails) to include shared/delegated mailboxes
-- Disallowed options are not surfaced; if a client forces a disallowed userId, the server ignores it and uses the impersonated mailbox instead.
-
-### HTTP Middleware (HTTP mode)
-Placed before `/mcp` handling:
-```ts
-app.use('/mcp', (req, _res, next) => {
-  const hdr = (process.env.MS365_MCP_IMPERSONATE_HEADER || 'X-Impersonate-User').toLowerCase();
-  const fromHeader = req.headers[hdr] as string | undefined;
-  const fromEnv = process.env.MS365_MCP_IMPERSONATE_USER;
-  const email = (fromHeader || fromEnv)?.trim();
-  if (email) ImpersonationContext.setImpersonatedUser(email);
-  next();
-});
-```
-Note: In STDIO mode there is no HTTP middleware; only the env variable applies.
-
-### Central `/me` Rewrite (App-permissions)
-In the request layer, if impersonation is active and the server is in client-credentials mode, `/me/...` is rewritten to `/users/{impersonated}/...`. If no impersonated identity is available, the request is blocked early with a configuration error.
-
-### Allowed Mailboxes (Phase 0)
-- Constructed as: `{ impersonated } ∪ allowlist(MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES)`
-- Cached with TTL `MS365_MCP_IMPERSONATE_CACHE_TTL` (default 3600s)
-- Used by the access validator and tool parameter shaping
-
-### Tool Behavior
-- For tools using `/users/:userId/...`:
-  - If `userId` is omitted, the server injects the impersonated email automatically.
-  - If `userId` is provided but not in the allowed set, it is ignored and replaced with the impersonated email (to avoid leaking info).
-- For tools using `/me/...`:
-  - The central rewrite applies; tools do not need to change their signatures.
-
-### Configuration
-- `MS365_MCP_IMPERSONATE_USER`: required to enable impersonation if no header is provided (email/UPN)
-- `MS365_MCP_IMPERSONATE_HEADER`: header name for dynamic impersonation (default: `X-Impersonate-User`)
-- `MS365_MCP_IMPERSONATE_ALLOWED_MAILBOXES`: optional comma-separated emails for shared/delegated mailboxes
-- `MS365_MCP_IMPERSONATE_CACHE_TTL`: TTL seconds for mailbox discovery cache (default: 3600)
-- `MS365_MCP_IMPERSONATE_REWRITE_ME`: enable `/me` rewrite in app-permissions (default: true)
-- `MS365_MCP_IMPERSONATE_DEBUG`: extra logging for impersonation flow
-
-### Security Notes
-- Only trust the impersonation header from a reverse proxy you control; strip it from public clients.
-- In Phase 0, if OpenWebUI does not send a header, the header logic is a no-op and the env user (if set) is used instead.
-
-### Expected Outcomes
-- No `/me` 400 errors under app-permissions when impersonation is set.
-- Clients only see/operate on permitted mailboxes; “access denied” should be rare and indicate misconfiguration or a client forcing invalid IDs.
+- [AUTH.md](AUTH.md) - Authentication setup and configuration
+- [SERVER_SETUP.md](SERVER_SETUP.md) - Complete server setup guide
+- [QUICK_START.md](QUICK_START.md) - Quick start guide

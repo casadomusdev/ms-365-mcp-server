@@ -9,7 +9,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { getToolDescription } from './tool-descriptions.js';
-import { ImpersonationContext, MailboxDiscoveryCache } from './impersonation/index.js';
+import { 
+  ImpersonationContext, 
+  MailboxDiscoveryCache, 
+  UserValidationCache,
+  ImpersonationResolver 
+} from './impersonation/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -403,7 +408,7 @@ export function registerGraphTools(
             allStoredMetaHeaders: storedMeta?.headers ? Object.keys(storedMeta.headers) : []
           });
 
-          const cache = new MailboxDiscoveryCache();
+          const cache = new MailboxDiscoveryCache(graphClient);
           let allowedEmails: string[] = [];
           if (impersonated) {
             const allowed = await cache.getMailboxes(impersonated);
