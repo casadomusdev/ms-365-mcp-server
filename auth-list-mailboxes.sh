@@ -35,6 +35,13 @@ fi
 if jq -e '.success == true' <<< "$OUTPUT" > /dev/null 2>&1; then
     MAILBOX_COUNT=$(jq -r '.mailboxes | length' <<< "$OUTPUT")
     
+    # Check for userEmail (indicates impersonation mode)
+    USER_EMAIL=$(jq -r '.userEmail // empty' <<< "$OUTPUT")
+    if [ -n "$USER_EMAIL" ]; then
+        echo -e "${CYAN}Impersonating user: ${USER_EMAIL}${NC}"
+        echo ""
+    fi
+    
     if [ "$MAILBOX_COUNT" -eq 0 ]; then
         echo "No mailboxes found."
         echo ""
@@ -92,6 +99,14 @@ if jq -e '.success == true' <<< "$OUTPUT" > /dev/null 2>&1; then
     done
     
     echo ""
+    
+    # Check for and display note if present
+    NOTE=$(jq -r '.note // empty' <<< "$OUTPUT")
+    if [ -n "$NOTE" ]; then
+        echo -e "${YELLOW}Note: ${NOTE}${NC}"
+        echo ""
+    fi
+    
     echo -e "${GREEN}✓ Mailbox listing complete${NC}"
     echo ""
     exit 0

@@ -105,12 +105,6 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
-    if (args.listImpersonatedMailboxes) {
-      const result = await authManager.listImpersonatedMailboxes();
-      console.log(JSON.stringify(result));
-      process.exit(0);
-    }
-
     const server = new MicrosoftGraphServer(authManager, args);
     await server.initialize(version);
     await server.start();

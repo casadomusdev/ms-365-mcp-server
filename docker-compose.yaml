@@ -48,6 +48,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     
+    # Load .env file - CRITICAL for docker compose run commands
+    env_file:
+      - .env
+    
     # === HTTP MODE CONFIGURATION ===
     # This starts the MCP server in HTTP mode on MS365_MCP_HTTP_PORT.
     # NOTE: --enable-auth-tools is required so auth-related MCP tools (including

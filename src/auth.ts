@@ -643,6 +643,38 @@ class AuthManager {
 
   async listMailboxes(): Promise<any> {
     try {
+      // Check if impersonation is configured
+      const impersonateUser = process.env.MS365_MCP_IMPERSONATE_USER?.trim();
+      
+      if (impersonateUser) {
+        // Use MailboxDiscoveryService for impersonated user
+        logger.info(`Listing mailboxes for impersonated user: ${impersonateUser}`);
+        
+        // Create temporary GraphClient for this CLI operation
+        const tempGraphClient = new GraphClient(this);
+        
+        // Use centralized discovery service
+        const service = new MailboxDiscoveryService(tempGraphClient);
+        const mailboxes = await service.discoverMailboxes(impersonateUser);
+        
+        // Format response for CLI/auth tool
+        return {
+          success: true,
+          userEmail: impersonateUser,
+          mailboxes: mailboxes.map(m => ({
+            id: m.id,
+            type: m.type,
+            displayName: m.displayName,
+            email: m.email,
+            isPrimary: m.type === 'personal',
+          })),
+          note: mailboxes.length === 1 
+            ? 'Only personal mailbox found. Delegate discovery requires MailboxSettings.Read and Calendars.Read permissions.' 
+            : undefined,
+        };
+      }
+      
+      // No impersonation - use standard discovery
       const token = await this.getToken();
       if (!token) {
         throw new Error('No valid token found');
@@ -693,7 +725,7 @@ class AuthManager {
           }
         }
       } catch (error) {
-        logger.debug(`Could not query mailbox settings: ${(error as Error).message}`);
+logger.debug(`Could not query mailbox settings: ${(error as Error).message}`);
       }
 
       // 3. Try to find shared mailboxes by querying for mailbox folders we have access to
@@ -781,48 +813,6 @@ class AuthManager {
       };
     } catch (error) {
       logger.error(`Error listing mailboxes: ${(error as Error).message}`);
-      return {
-        success: false,
-        error: (error as Error).message,
-      };
-    }
-  }
-
-  async listImpersonatedMailboxes(): Promise<any> {
-    try {
-      const impersonateUser = process.env.MS365_MCP_IMPERSONATE_USER?.trim();
-      
-      if (!impersonateUser) {
-        return {
-          success: false,
-          error: 'MS365_MCP_IMPERSONATE_USER environment variable is not configured',
-        };
-      }
-
-      // Create temporary GraphClient for this CLI operation
-      const tempGraphClient = new GraphClient(this);
-      
-      // Use centralized discovery service
-      const service = new MailboxDiscoveryService(tempGraphClient);
-      const mailboxes = await service.discoverMailboxes(impersonateUser);
-      
-      // Format response for CLI/auth tool
-      return {
-        success: true,
-        userEmail: impersonateUser,
-        mailboxes: mailboxes.map(m => ({
-          id: m.id,
-          type: m.type,
-          displayName: m.displayName,
-          email: m.email,
-          isPrimary: m.type === 'personal',
-        })),
-        note: mailboxes.length === 1 
-          ? 'Only personal mailbox found. Delegate discovery requires MailboxSettings.Read and Calendars.Read permissions.' 
-          : undefined,
-      };
-    } catch (error) {
-      logger.error(`Error listing impersonated mailboxes: ${(error as Error).message}`);
       return {
         success: false,
         error: (error as Error).message,

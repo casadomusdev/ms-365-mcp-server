@@ -21,8 +21,7 @@ program
   .option('--list-accounts', 'List all cached accounts')
   .option('--select-account <accountId>', 'Select a specific account by ID')
   .option('--remove-account <accountId>', 'Remove a specific account by ID')
-  .option('--list-mailboxes', 'List all accessible mailboxes (personal, delegated, shared)')
-  .option('--list-impersonated-mailboxes', 'List mailboxes accessible to the user specified in MS365_MCP_IMPERSONATE_USER')
+  .option('--list-mailboxes', 'List all accessible mailboxes (respects MS365_MCP_IMPERSONATE_USER if set)')
   .option('--read-only', 'Start server in read-only mode, disabling write operations')
   .option(
     '--http [port]',
@@ -52,7 +51,6 @@ export interface CommandOptions {
   selectAccount?: string;
   removeAccount?: string;
   listMailboxes?: boolean;
-  listImpersonatedMailboxes?: boolean;
   readOnly?: boolean;
   http?: string | boolean;
   enableAuthTools?: boolean;
