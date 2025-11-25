@@ -59,7 +59,7 @@ if jq -e '.success == true' <<< "$OUTPUT" > /dev/null 2>&1; then
         MAILBOX_NAMES[$INDEX]=$(jq -r '.displayName // "N/A"' <<< "$mailbox")
         MAILBOX_EMAILS[$INDEX]=$(jq -r '.email // "N/A"' <<< "$mailbox")
         IS_PRIMARY[$INDEX]=$(jq -r '.isPrimary // false' <<< "$mailbox")
-        ((INDEX++))
+        INDEX=$((INDEX + 1))
     done < <(jq -c '.mailboxes[]' <<< "$OUTPUT")
     
     # Display numbered list with type badges

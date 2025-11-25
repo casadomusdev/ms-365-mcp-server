@@ -108,6 +108,10 @@ interface CallToolResult {
   [key: string]: unknown;
 }
 
+// Module-level cache instance shared across all tool calls
+// This ensures mailbox discovery results are cached between requests
+let sharedMailboxCache: MailboxDiscoveryCache | null = null;
+
 export function registerGraphTools(
   server: McpServer,
   graphClient: GraphClient,
@@ -115,6 +119,12 @@ export function registerGraphTools(
   enabledToolsPattern?: string,
   orgMode: boolean = false
 ): void {
+  // Initialize shared cache on first registration
+  if (!sharedMailboxCache) {
+    sharedMailboxCache = new MailboxDiscoveryCache(graphClient);
+    logger.info('Initialized shared mailbox discovery cache');
+  }
+
   const stripHtml = (html: string): string =>
     String(html ?? '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -408,10 +418,10 @@ export function registerGraphTools(
             allStoredMetaHeaders: storedMeta?.headers ? Object.keys(storedMeta.headers) : []
           });
 
-          const cache = new MailboxDiscoveryCache(graphClient);
+          // Use shared cache instance instead of creating new one per request
           let allowedEmails: string[] = [];
-          if (impersonated) {
-            const allowed = await cache.getMailboxes(impersonated);
+          if (impersonated && sharedMailboxCache) {
+            const allowed = await sharedMailboxCache.getMailboxes(impersonated);
             allowedEmails = allowed.map((m) => m.email.toLowerCase());
           }
 
