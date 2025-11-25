@@ -8,9 +8,7 @@ import type { MailboxInfo } from './MailboxDiscoveryCache.js';
    * This service implements a comprehensive 4-strategy approach to discover:
    * - Personal mailbox (always included)
    * - Delegated mailboxes (via calendar permissions or SendAs permissions)
-   * - Shared mailboxes (mailboxes with no licenses that user has access to)
-   * 
-   * Performance characteristics:
+   * - Shared mailboxes (mailboxes with no l
    * - Uses concurrent request limiting (max 5 simultaneous requests)
    * - Implements 5-second timeout per individual request
    * - Queries tenant users with reasonable limits ($top=100)
@@ -54,7 +52,9 @@ export class MailboxDiscoveryService {
    * 
    * @param userEmail - Email address of the user to discover mailboxes for
    * @returns Array of discovered mailboxes with metadata
-   * @throws Error if user cannot be found or if Graph API access fails
+   * @throws Error if user cannot be found or if Graph icenses that user has access to)
+   * 
+   * Performance characteristics:API access fails
    */
   async discoverMailboxes(userEmail: string): Promise<MailboxInfo[]> {
     logger.info(`[MailboxDiscovery] Starting discovery for ${userEmail}`);
@@ -191,10 +191,7 @@ export class MailboxDiscoveryService {
   ): Promise<MailboxInfo | null> {
     let hasAccess = false;
     let accessType: 'shared' | 'delegated' = 'delegated';
-
-    const isSharedMailbox = user.userPrincipalName?.toLowerCase().includes('shared') ||
-      user.displayName?.toLowerCase().includes('shared') ||
-      user.mail?.toLowerCase().includes('shared');
+    let isSharedMailbox = false;
 
     // Strategy 1: Check calendar permissions (calendar delegate access)
     if (await this.checkCalendarPermissions(user.id, impersonatedUserEmail)) {
@@ -203,16 +200,17 @@ export class MailboxDiscoveryService {
       logger.info(`Found calendar delegate: ${impersonatedUserEmail} → ${user.displayName}`);
     }
 
-    // Strategy 2: Check for shared mailbox membership
-    if (!hasAccess && isSharedMailbox) {
+    // Strategy 2: Check for shared mailbox (no licenses)
+    if (!hasAccess) {
       if (await this.detectSharedMailbox(user)) {
+        isSharedMailbox = true;
         accessType = 'shared';
         // Will validate access in Strategy 4
       }
     }
 
     // Strategy 3: Check SendAs permissions (mail delegate)
-    if (!hasAccess) {
+    if (!hasAccess && !isSharedMailbox) {
       if (await this.checkSendAsPermissions(user.id, impersonatedUserEmail)) {
         hasAccess = true;
         accessType = 'delegated';
@@ -221,7 +219,7 @@ export class MailboxDiscoveryService {
     }
 
     // Strategy 4: For shared mailboxes, verify actual access
-    if (accessType === 'shared' && !hasAccess) {
+    if (isSharedMailbox && !hasAccess) {
       if (await this.verifyMailboxAccess(user.userPrincipalName || user.mail)) {
         hasAccess = true;
         logger.info(`Found shared mailbox access: ${impersonatedUserEmail} → ${user.displayName}`);

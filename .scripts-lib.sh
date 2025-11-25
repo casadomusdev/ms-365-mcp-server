@@ -19,7 +19,7 @@ export NC='\033[0m' # No Color
 # Detect execution mode
 # Sets EXECUTION_MODE to either:
 #   - "direct" = run Node.js directly (inside container or local machine)
-#   - "docker-delegate" = delegate to Docker container
+#   - "docker-delegate" = delegate to Docker container (only if container is running)
 detect_execution_mode() {
     # Check if we're inside a Docker container
     if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
@@ -27,13 +27,15 @@ detect_execution_mode() {
         return
     fi
     
-    # Check if Docker is available
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-        EXECUTION_MODE="docker-delegate"
-        return
+    # Check if Docker container is RUNNING (not just if Docker is available)
+    if command -v docker >/dev/null 2>&1; then
+        if docker compose ps ms365-mcp 2>/dev/null | grep -q "Up"; then
+            EXECUTION_MODE="docker-delegate"
+            return
+        fi
     fi
     
-    # No Docker, run directly (local Node.js)
+    # Default: run directly with local Node.js
     EXECUTION_MODE="direct"
 }
 

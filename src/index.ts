@@ -100,7 +100,10 @@ async function main(): Promise<void> {
     }
 
     if (args.listMailboxes) {
-      const result = await authManager.listMailboxes();
+      const result = await authManager.listMailboxes({
+        bypassImpersonation: args.all,
+        clearCache: args.clearCache,
+      });
       console.log(JSON.stringify(result));
       process.exit(0);
     }

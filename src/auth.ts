@@ -641,10 +641,12 @@ class AuthManager {
     return this.selectedAccountId;
   }
 
-  async listMailboxes(): Promise<any> {
+  async listMailboxes(options?: { bypassImpersonation?: boolean; clearCache?: boolean }): Promise<any> {
     try {
-      // Check if impersonation is configured
-      const impersonateUser = process.env.MS365_MCP_IMPERSONATE_USER?.trim();
+      // Check if impersonation is configured (unless bypassed with --all flag)
+      const impersonateUser = options?.bypassImpersonation 
+        ? undefined 
+        : process.env.MS365_MCP_IMPERSONATE_USER?.trim();
       
       if (impersonateUser) {
         // Use MailboxDiscoveryService for impersonated user
@@ -652,6 +654,14 @@ class AuthManager {
         
         // Create temporary GraphClient for this CLI operation
         const tempGraphClient = new GraphClient(this);
+        
+        // Clear cache if requested
+        if (options?.clearCache) {
+          const { MailboxDiscoveryCache } = await import('./impersonation/MailboxDiscoveryCache.js');
+          const cache = new MailboxDiscoveryCache(tempGraphClient);
+          cache.clearCache();
+          logger.info('Mailbox discovery cache cleared');
+        }
         
         // Use centralized discovery service
         const service = new MailboxDiscoveryService(tempGraphClient);
@@ -674,7 +684,11 @@ class AuthManager {
         };
       }
       
-      // No impersonation - use standard discovery
+      // No impersonation - use standard discovery (or --all flag used)
+      if (options?.bypassImpersonation) {
+        logger.info('Listing ALL mailboxes accessible to access token (--all flag used, ignoring MS365_MCP_IMPERSONATE_USER)');
+      }
+      
       const token = await this.getToken();
       if (!token) {
         throw new Error('No valid token found');
@@ -776,19 +790,41 @@ logger.debug(`Could not query mailbox settings: ${(error as Error).message}`);
                 clearTimeout(timeoutId);
 
                 if (mailFoldersResponse.ok) {
-                  // User has access to this mailbox
-                  const isShared = user.userPrincipalName?.toLowerCase().includes('shared') || 
-                                  user.displayName?.toLowerCase().includes('shared') ||
-                                  user.mail?.toLowerCase().includes('shared');
+                  // User has access to this mailbox - determine type by checking licenses
+                  let mailboxType: 'shared' | 'delegated' = 'delegated';
+                  
+                  try {
+                    // Check if mailbox has licenses (shared mailboxes typically have none)
+                    const userDetailsResponse = await fetch(
+                      `https://graph.microsoft.com/v1.0/users/${user.id}?$select=assignedLicenses`,
+                      {
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                        },
+                      }
+                    );
+                    
+                    if (userDetailsResponse.ok) {
+                      const userDetails = await userDetailsResponse.json();
+                      const hasNoLicenses = !userDetails.assignedLicenses || 
+                                          userDetails.assignedLicenses.length === 0;
+                      
+                      if (hasNoLicenses) {
+                        mailboxType = 'shared';
+                      }
+                    }
+                  } catch (licenseCheckError) {
+                    logger.debug(`Could not check licenses for ${user.displayName}: ${(licenseCheckError as Error).message}`);
+                  }
                   
                   mailboxes.push({
                     id: user.id,
-                    type: isShared ? 'shared' : 'delegated',
+                    type: mailboxType,
                     displayName: user.displayName,
                     email: user.userPrincipalName || user.mail,
                     isPrimary: false,
                   });
-                  logger.info(`Found accessible mailbox: ${user.displayName}`);
+                  logger.info(`Found accessible mailbox: ${user.displayName} [${mailboxType.toUpperCase()}]`);
                 }
               } catch (error: any) {
                 // Silently skip mailboxes we don't have access to or timeout

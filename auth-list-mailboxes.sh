@@ -6,7 +6,11 @@
 # Supports dual-mode operation: Docker or local Node.js
 #
 # Usage:
-#   ./auth-list-mailboxes.sh
+#   ./auth-list-mailboxes.sh [--all] [--clear-cache]
+#
+# Options:
+#   --all          List all mailboxes accessible to the access token (ignores MS365_MCP_IMPERSONATE_USER)
+#   --clear-cache  Clear the mailbox discovery cache before listing
 #
 # Exit codes:
 #   0 - Success
@@ -18,6 +22,26 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/.scripts-lib.sh"
 
+# Parse command-line arguments
+FLAGS=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --all)
+            FLAGS="$FLAGS --all"
+            shift
+            ;;
+        --clear-cache)
+            FLAGS="$FLAGS --clear-cache"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--all] [--clear-cache]"
+            exit 1
+            ;;
+    esac
+done
+
 echo -e "${YELLOW}MS-365 MCP Server - List Accessible Mailboxes${NC}"
 echo "=============================================="
 echo ""
@@ -26,9 +50,9 @@ echo ""
 detect_execution_mode
 
 if [ "$EXECUTION_MODE" = "docker-delegate" ]; then
-    OUTPUT=$(docker compose run --rm ms365-mcp node dist/index.js --list-mailboxes 2>&1)
+    OUTPUT=$(docker compose run --rm ms365-mcp node dist/index.js --list-mailboxes $FLAGS 2>&1)
 else
-    OUTPUT=$(node dist/index.js --list-mailboxes 2>&1)
+    OUTPUT=$(node dist/index.js --list-mailboxes $FLAGS 2>&1)
 fi
 
 # Parse the JSON output

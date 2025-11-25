@@ -4,6 +4,57 @@
 
 Fix the broken MailboxDiscoveryCache that doesn't actually discover shared mailboxes, and improve the impersonation system with proper validation and documentation.
 
+## BUG FIX - Shared Mailbox Name-Based Filtering (2025-11-25)
+
+### Problem
+
+Shared mailboxes without "shared" in their name (e.g., `technik@casadomus.tech`) were not being detected in either impersonation mode or --all mode due to name-based filtering:
+
+**In MailboxDiscoveryService.ts (impersonation mode):**
+```typescript
+const isSharedMailbox = user.userPrincipalName?.toLowerCase().includes('shared') ||
+  user.displayName?.toLowerCase().includes('shared') ||
+  user.mail?.toLowerCase().includes('shared');
+
+if (!hasAccess && isSharedMailbox) {
+  if (await this.detectSharedMailbox(user)) { ... }
+}
+```
+
+**In auth.ts --all mode:**
+```typescript
+const isShared = user.userPrincipalName?.toLowerCase().includes('shared') || 
+                user.displayName?.toLowerCase().includes('shared') ||
+                user.mail?.toLowerCase().includes('shared');
+
+mailboxes.push({
+  type: isShared ? 'shared' : 'delegated',
+  ...
+});
+```
+
+### Root Cause
+
+The logic assumed shared mailboxes would have "shared" in their name, but this is not a requirement. Shared mailboxes are properly identified by having **no assigned licenses**, which the code already checks with `detectSharedMailbox()`, but this check was gated by the name filter.
+
+### Solution
+
+1. **MailboxDiscoveryService.ts**: Removed name-based filter, now checks all users for licenses:
+   - Strategy 2 runs license check for all users (not just those with "shared" in name)
+   - Strategy 4 verifies access for all no-license mailboxes detected
+
+2. **auth.ts --all mode**: Added license check to determine mailbox type:
+   - After confirming access, queries `/users/{id}?$select=assignedLicenses`
+   - Sets type to 'shared' if no licenses found, 'delegated' otherwise
+   - Logs mailbox type for clarity
+
+### Impact
+
+- **Before**: Only mailboxes with "shared" in name were typed as [SHARED]
+- **After**: All no-license mailboxes correctly typed as [SHARED] regardless of name
+- **Performance**: Minimal impact - license check runs only for accessible mailboxes
+- **Result**: `technik@casadomus.tech` and similar mailboxes now properly detected
+
 ## ANALYSIS
 
 ### Current Problems
