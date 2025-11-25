@@ -285,7 +285,11 @@ export class MailboxDiscoveryService {
    * @returns true if the mailbox appears to be a shared mailbox
    */
   private async detectSharedMailbox(user: any): Promise<boolean> {
-    logger.debug(`Checking if ${user.displayName} is a shared mailbox...`);
+    const userEmail = user.userPrincipalName || user.mail;
+    
+    if (this.debugMode) {
+      logger.info(`[MailboxDiscovery] Checking licenses for ${user.displayName} (${userEmail})...`);
+    }
 
     try {
       const controller = new AbortController();
@@ -299,17 +303,20 @@ export class MailboxDiscoveryService {
       clearTimeout(timeoutId);
 
       // Shared mailboxes typically have no licenses
-      const isLikelyShared = !mailboxData.assignedLicenses ||
-        mailboxData.assignedLicenses.length === 0;
+      const licenseCount = mailboxData.assignedLicenses?.length || 0;
+      const isLikelyShared = licenseCount === 0;
 
-      logger.debug(
-        `${user.displayName} license check: ${isLikelyShared ? 'no licenses (likely shared)' : 'has licenses'}`
-      );
+      if (this.debugMode || licenseCount > 0) {
+        // Always log when licenses are found, or in debug mode
+        logger.info(
+          `[MailboxDiscovery] ${user.displayName} (${userEmail}): ${licenseCount} license(s) → ${isLikelyShared ? 'SHARED mailbox (no licenses)' : 'NOT shared (has licenses, will check delegate permissions)'}`
+        );
+      }
 
       return isLikelyShared;
     } catch (error: any) {
       if (error.name !== 'AbortError') {
-        logger.debug(`Shared mailbox check failed for ${user.displayName}: ${error.message}`);
+        logger.debug(`[MailboxDiscovery] License check failed for ${user.displayName}: ${error.message}`);
       }
     }
 
