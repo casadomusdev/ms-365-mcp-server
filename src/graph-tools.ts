@@ -427,6 +427,11 @@ export function registerGraphTools(
 
           logger.info(`Allowed mailboxes after mailbox discovery: ${JSON.stringify(allowedEmails)}`);
 
+          // Single-line audit log for access accountability
+          logger.info(
+            `[ACCESS_GRANT] tool=${safeName} | source=${impersonationSource} | user=${impersonated || 'none'} | mailboxes=${allowedEmails.join(',') || 'none'}`
+          );
+
           const parameterDefinitions = tool.parameters || [];
 
           let path = tool.path;
