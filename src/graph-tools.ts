@@ -686,6 +686,18 @@ export function registerGraphTools(
 
             try {
               const jsonResponse = JSON.parse(responseText);
+              
+              // Special handling for list-mail-folders: add helper field to make correct ID explicit
+              if (tool.alias === 'list-mail-folders' && jsonResponse.value && Array.isArray(jsonResponse.value)) {
+                for (const folder of jsonResponse.value) {
+                  if (folder && typeof folder === 'object' && folder.id) {
+                    // Add explicit helper field pointing to the correct ID to use
+                    folder.folderIdToUse = folder.id;
+                    folder._useThisIdForFolderQueries = folder.id;
+                  }
+                }
+              }
+              
               // Scrub or include message bodies depending on params
               try {
                 const includeBody = params.includeBody === true;
@@ -869,7 +881,12 @@ export function registerGraphTools(
 
     const schema = {
       ...cloneParamSchema(base.paramSchema),
-      folderId: z.string().describe('Optional mail folder id to scope results').optional(),
+      folderId: z
+        .string()
+        .describe(
+          'Optional mail folder id to scope results. MUST be the folder\'s "id" field from list-mail-folders response (NOT parentFolderId). Use the exact "id" value of the target folder.'
+        )
+        .optional(),
       sharedMailboxId: z
         .string()
         .describe('Optional shared mailbox object id/UPN; takes precedence over sharedMailboxEmail')
