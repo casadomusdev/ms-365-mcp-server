@@ -29,23 +29,23 @@ Request → Check HTTP Header → Check Context → Check Env Var → Use First 
 
 ### Mailbox Discovery
 
-Once a user is identified for impersonation, the server automatically discovers which mailboxes they can access using a sophisticated 4-strategy approach:
+Once a user is identified for impersonation, the server automatically discovers which mailboxes they can access using **calendar delegation detection**:
 
-**Strategy 1: Calendar Permissions**
-- Checks `/calendar/calendarPermissions` endpoint
-- Detects users with calendar delegate access
+**Detection Strategy:**
+- Queries all shared mailboxes in the tenant (unlicensed, enabled accounts)
+- For each shared mailbox, checks `/calendar/calendarPermissions` endpoint
+- Includes mailboxes where the user has calendar delegation permissions
 
-**Strategy 2: Shared Mailbox Detection** 
-- Identifies mailboxes with "shared" in name/email
-- Verifies no assigned licenses (typical for shared mailboxes)
+**Important Limitations:**
+- ⚠️ Only detects mailboxes where the user has **calendar delegation**
+- ❌ Does NOT detect: SendAs-only permissions, Full Access without calendar access
+- ℹ️ Exchange mailbox delegation permissions (SendAs, Full Access) cannot be reliably queried via Microsoft Graph API
+- ℹ️ For full delegation detection, Exchange PowerShell or EWS is required (not available in this implementation)
 
-**Strategy 3: SendAs Permissions**
-- Checks `/sendAs` endpoint
-- Detects users with mail delegation (SendAs/SendOnBehalf)
-
-**Strategy 4: Mailbox Access Verification**
-- Tests actual mailbox access by querying inbox
-- Confirms Full Access permissions
+**Why Calendar Delegation?**
+- Calendar delegation is the ONLY reliable indicator available via Graph API
+- Users with full mailbox access typically also have calendar delegation
+- More efficient than checking all tenant users
 
 ### Caching Architecture
 
@@ -164,10 +164,8 @@ ImpersonationResolver
 
 MailboxDiscoveryCache
 └─> MailboxDiscoveryService
-    ├─> Strategy 1: Calendar Permissions
-    ├─> Strategy 2: Shared Mailbox Detection
-    ├─> Strategy 3: SendAs Permissions  
-    └─> Strategy 4: Mailbox Access Verification
+    ├─> Query shared mailboxes (unlicensed, enabled)
+    └─> Check calendar delegation permissions
 ```
 
 ### Data Flow
@@ -180,10 +178,8 @@ MailboxDiscoveryCache
    ├─> Cache hit? Return cached mailboxes (< 10ms)
    └─> Cache miss? Run MailboxDiscoveryService (2-10 seconds)
        ├─> Personal mailbox (always included)
-       ├─> Strategy 1: Calendar delegates
-       ├─> Strategy 2: Shared mailboxes
-       ├─> Strategy 3: SendAs permissions
-       ├─> Strategy 4: Access verification
+       ├─> Query all shared mailboxes in tenant
+       ├─> Check calendar delegation for each
        └─> Cache results with TTL
 5. Tool executes with allowed mailboxes enforced
 ```
@@ -303,21 +299,29 @@ MS365_MCP_IMPERSONATE_CACHE_TTL=1800  # 30 minutes
 **Symptom:** Only personal mailbox found
 
 **Causes:**
-1. User has no actual delegate access
-2. Missing Graph API permissions
-3. Discovery strategies timing out
+1. User has no calendar delegation to shared mailboxes
+2. User has SendAs-only permissions (not detectable via Graph API)
+3. User has Full Access without calendar delegation (rare)
+4. Missing Graph API permissions
+5. Discovery timing out
 
-**Solution:**
+**Solutions:**
 
-First, verify all required Graph API permissions are granted in Azure AD:
+**1. Verify the user actually has calendar delegation:**
+- In Exchange Admin Center or PowerShell, check if the user has calendar permissions on shared mailboxes
+- Calendar delegation is typically granted along with full mailbox access, but not always
+
+**2. Verify Graph API permissions are granted in Azure AD:**
 
 **Required Application Permissions (Client Credentials Mode):**
-- `Mail.Read` - Read mail in all mailboxes (Strategy 4: access verification)
-- `Calendars.Read` - Read calendars (Strategy 1: calendar delegation check)
-- `MailboxSettings.Read` - Read mailbox settings (Strategy 3: SendAs permissions)
-- `User.Read.All` - Read all users (Strategy 2: shared mailbox detection, user validation)
+- `Calendars.Read` - Read calendars in all mailboxes (for calendar delegation detection)
+- `User.Read.All` - Read all users (for shared mailbox enumeration and user validation)
 
-These permissions are all marked as **required** in SERVER_SETUP.md. Without them, discovery strategies will fail silently and fewer mailboxes will be discovered.
+**Optional but Recommended:**
+- `Mail.Read` - Allows testing actual mailbox access
+- `MailboxSettings.Read` - Allows reading mailbox metadata
+
+These permissions are marked as **required** in SERVER_SETUP.md. The core discovery functionality requires `Calendars.Read` and `User.Read.All` at minimum.
 
 Then enable debug logging to see which strategies are working:
 
