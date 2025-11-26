@@ -55,6 +55,110 @@ The logic assumed shared mailboxes would have "shared" in their name, but this i
 - **Performance**: Minimal impact - license check runs only for accessible mailboxes
 - **Result**: `technik@casadomus.tech` and similar mailboxes now properly detected
 
+## BUG FIX - Full Access Delegation Detection (2025-11-25)
+
+### Problem
+
+Shared mailboxes with "Full Access" delegation (configured at Exchange/Microsoft 365 admin level) were not being discovered in impersonation mode. Only mailboxes with Calendar or SendAs permissions were detected.
+
+**Example**: `technik@casadomus.tech` appeared with `--all` switch but not with impersonation enabled.
+
+**Log evidence:**
+```
+[MailboxDiscovery] Technik (technik@casadomus.tech): 0 license(s) → SHARED mailbox (checking delegation permissions)
+ERROR: Microsoft Graph API error: 404 Not Found - "Resource 'sendAs' does not exist..."
+[MailboxDiscovery] Technik (technik@casadomus.tech): No delegation permissions found
+```
+
+### Root Cause
+
+Microsoft Graph API does **not expose Full Access delegation permissions** via the Calendar or SendAs API endpoints. These permissions are configured at the Exchange admin level but cannot be queried programmatically through the current Graph API endpoints.
+
+The existing 3-strategy discovery only checked:
+1. ✅ Calendar permissions (`/calendar/calendarPermissions`) - works for calendar delegates
+2. ✅ SendAs permissions (`/sendAs`) - works for mail delegates  
+3. ❌ **Missing**: Full Access delegations - no Graph API endpoint exists
+
+Meanwhile, `--all` mode worked because it **bypasses permission checking** and directly attempts to access mailboxes, which succeeds for Full Access delegations.
+
+### Solution
+
+Added **Strategy 4: Mailbox Access Test** - a fallback that tests actual mailbox access by attempting to read mailFolders. This catches Full Access delegations that aren't exposed via Graph API.
+
+**Implementation in `MailboxDiscoveryService.ts`:**
+
+```typescript
+private async testMailboxAccess(userId: string, impersonatedUserEmail: string): Promise<boolean> {
+  try {
+    // Attempt to read mailFolders - succeeds if user has Full Access delegation
+    await this.graphClient.makeRequest(
+      `/users/${userId}/mailFolders?$top=1`,
+      {}
+    );
+    return true;
+  } catch (error: any) {
+    // Access denied is expected for mailboxes without delegation
+    logger.debug(`Mailbox access test failed for user ${userId}: ${error.message}`);
+    return false;
+  }
+}
+```
+
+Added to delegation check flow in `checkUserMailboxAccess()`:
+```typescript
+// Strategy 3: Test actual mailbox access (fallback for Full Access delegations)
+// This catches delegations configured at Exchange level that aren't exposed via Graph API
+if (!hasAccess) {
+  if (await this.testMailboxAccess(user.id, impersonatedUserEmail)) {
+    hasAccess = true;
+    logger.info(`[MailboxDiscovery] Found Full Access delegation (via mailbox test): ${impersonatedUserEmail} → ${user.displayName}`);
+  }
+}
+```
+
+### Testing & Verification
+
+**Before fix:**
+```bash
+$ ./auth-list-mailboxes.sh
+Found 1 mailbox(es):
+1. [PERSONAL] Robert Kirscht (r.kirscht@casadomus.tech) ★
+```
+
+**After fix:**
+```bash
+$ ./auth-list-mailboxes.sh --clear-cache
+Found 12 mailbox(es):
+1. [PERSONAL] Robert Kirscht (r.kirscht@casadomus.tech) ★
+2. [SHARED] Casadomus AG (info@casadomus.tech)
+3. [SHARED] Admin (admin@casadomus.tech)
+4. [SHARED] Vertrieb casadomus AG (vertrieb@casadomus.tech)
+5. [SHARED] Development (dev@casadomus.tech)
+6. [SHARED] Technik (technik@casadomus.tech) ← NOW FOUND!
+7. [SHARED] Matthias Steube (m.steube@casadomus.de)
+... (11 shared mailboxes total)
+```
+
+**Debug log confirms detection method:**
+```
+[MailboxDiscovery] Found Full Access delegation (via mailbox test): r.kirscht@casadomus.tech → Technik
+```
+
+### Impact
+
+- **Before**: Only Calendar/SendAs delegations detected (incomplete discovery)
+- **After**: All delegation types detected including Full Access (complete discovery)
+- **Performance**: One additional lightweight API call (`mailFolders?$top=1`) per shared mailbox
+- **Result**: All shared mailboxes with any delegation type now properly discovered
+
+### Technical Notes
+
+This solution is necessary because:
+1. Microsoft Graph API has no endpoint to query Full Access delegations
+2. Full Access is configured at Exchange admin level, not exposed in Graph API
+3. Testing actual mailbox access is the only reliable way to detect these delegations
+4. The mailFolders query is lightweight (top=1) and respects existing timeout/concurrency limits
+
 ## ANALYSIS
 
 ### Current Problems
