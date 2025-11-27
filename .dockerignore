@@ -31,9 +31,6 @@ coverage
 !README.md
 docs
 
-# CI/CD
-.releaserc.json
-
 # Development
 .env
 .env.local
