@@ -2,7 +2,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import logger from './logger.js';
 import GraphClient from './graph-client.js';
-import type AuthManager from './auth.js';
 import { api } from './generated/client.js';
 import { z } from 'zod';
 import { readFileSync } from 'fs';
@@ -10,12 +9,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { getToolDescription } from './tool-descriptions.js';
-import { 
-  ImpersonationContext, 
-  MailboxDiscoveryCache, 
+import {
+  ImpersonationContext,
+  MailboxDiscoveryCache,
   UserValidationCache,
-  ImpersonationResolver 
+  ImpersonationResolver
 } from './impersonation/index.js';
+import { TOOL_BLACKLIST } from './tool-blacklist.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -112,6 +112,20 @@ interface CallToolResult {
 // Module-level cache instance shared across all tool calls
 // This ensures mailbox discovery results are cached between requests
 let sharedMailboxCache: MailboxDiscoveryCache | null = null;
+
+type ToolMetadata = {
+  title: string;
+  readOnlyHint: boolean;
+};
+
+interface GraphToolDefinition {
+  alias: string;
+  safeName: string;
+  description: string;
+  paramSchema: Record<string, unknown>;
+  metadata: ToolMetadata;
+  handler: (params: any) => Promise<CallToolResult>;
+}
 
 export function registerGraphTools(
   server: McpServer,
@@ -296,6 +310,9 @@ export function registerGraphTools(
     }
   }
 
+  const toolDefinitions = new Map<string, GraphToolDefinition>();
+  const sanitizedTools: Array<{ original: string; sanitized: string }> = [];
+
   for (const tool of api.endpoints) {
     const endpointConfig = endpointsData.find((e) => e.toolName === tool.alias);
     if (!orgMode && endpointConfig && !endpointConfig.scopes && endpointConfig.workScopes) {
@@ -357,7 +374,8 @@ export function registerGraphTools(
     const safeName = createSafeToolName(tool.alias);
     const safeTitle = createSafeToolName(tool.alias);
     if (tool.alias !== safeName) {
-      logger.warn(`Tool alias exceeds 64 chars, renaming`, { alias: tool.alias, safeName });
+      sanitizedTools.push({ original: tool.alias, sanitized: safeName });
+      logger.warn(`Tool alias sanitized`, { alias: tool.alias, safeName });
     }
 
     const finalDescription = getToolDescription(
@@ -366,15 +384,8 @@ export function registerGraphTools(
         `Execute ${tool.method.toUpperCase()} request to ${tool.path} (${tool.alias})`
     );
 
-    server.tool(
-      safeName,
-      finalDescription,
-      paramSchema as any,
-      {
-        title: safeTitle,
-        readOnlyHint: tool.method.toUpperCase() === 'GET',
-      },
-      async (params: any) => {
+    const readOnlyHint = tool.method.toUpperCase() === 'GET';
+    const handler = async (params: any) => {
         logger.info(`Tool ${safeName} called with params: ${JSON.stringify(params)}`);
         try {
           logger.info(`params: ${JSON.stringify(params)}`);
@@ -506,9 +517,16 @@ export function registerGraphTools(
                   break;
 
                 case 'Query':
+                  // Skip empty query parameters to avoid Graph API errors
+                  if (paramValue === '' || paramValue === null || paramValue === undefined) {
+                    break;
+                  }
                   if (fixedParamName === '$search') {
-                    const sanitized = sanitizeAqsSearch(String(paramValue ?? ''));
-                    queryParams[fixedParamName] = `${sanitized}`;
+                    const sanitized = sanitizeAqsSearch(String(paramValue));
+                    // Only add if sanitized value is not empty
+                    if (sanitized.trim().length > 0) {
+                      queryParams[fixedParamName] = `${sanitized}`;
+                    }
                   } else {
                     queryParams[fixedParamName] = `${paramValue}`;
                   }
@@ -572,9 +590,12 @@ export function registerGraphTools(
 
           if (Object.keys(queryParams).length > 0) {
             const queryString = Object.entries(queryParams)
+              .filter(([_, value]) => value !== '' && value !== null && value !== undefined)
               .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
               .join('&');
-            path = `${path}${path.includes('?') ? '&' : '?'}${queryString}`;
+            if (queryString) {
+              path = `${path}${path.includes('?') ? '&' : '?'}${queryString}`;
+            }
           }
 
           const options: {
@@ -761,20 +782,247 @@ export function registerGraphTools(
             isError: true,
           };
         }
-      }
-    );
+      };
+
+    toolDefinitions.set(tool.alias, {
+      alias: tool.alias,
+      safeName,
+      description: finalDescription,
+      paramSchema,
+      metadata: {
+        title: safeTitle,
+        readOnlyHint,
+      },
+      handler,
+    });
   }
 
-  // NOTE: The MCP TypeScript SDK's server.tool() method only passes the 'arguments' 
-  // field to tool handlers, not the full CallToolRequestParams which contains _meta.
-  // This means _meta data sent by MCPO is currently inaccessible in tool handlers.
-  // 
-  // The SDK would need to be updated to either:
-  // 1. Pass the full params object (including _meta) to tool handlers
-  // 2. Provide a setRequestHandler() method to intercept requests before tool handlers
-  // 3. Expose _meta through a different mechanism
-  //
-  // For now, impersonation will work via:
-  // - HTTP middleware (for HTTP mode) -> ImpersonationContext  
-  // - MS365_MCP_IMPERSONATE_USER env var (fallback for all modes)
+  const blacklist = new Set<string>(TOOL_BLACKLIST as readonly string[]);
+  for (const def of toolDefinitions.values()) {
+    if (blacklist.has(def.alias)) {
+      logger.info(`Skipping tool ${def.alias} - managed by wrapper`);
+      continue;
+    }
+
+    server.tool(def.safeName, def.description, def.paramSchema as any, def.metadata, def.handler);
+  }
+
+  const invokeInternalTool = async (
+    alias: string,
+    params: Record<string, unknown>
+  ): Promise<CallToolResult> => {
+    const def = toolDefinitions.get(alias);
+    if (!def) {
+      throw new Error(`Internal tool ${alias} is not available`);
+    }
+    return def.handler(params);
+  };
+
+  const cloneParamSchema = (
+    schema: Record<string, unknown> | undefined
+  ): Record<string, unknown> => ({ ...(schema || {}) });
+
+  const getToolDefinitionOrWarn = (alias: string): GraphToolDefinition | undefined => {
+    const def = toolDefinitions.get(alias);
+    if (!def) {
+      logger.warn(
+        `Wrapper registration skipped because required internal alias '${alias}' was not generated (feature disabled or filtered)`
+      );
+    }
+    return def;
+  };
+
+  const registerWrapperTool = (
+    alias: string,
+    description: string,
+    paramSchema: Record<string, unknown>,
+    metadata: ToolMetadata,
+    handler: (params: any) => Promise<CallToolResult>
+  ) => {
+    const safeName = createSafeToolName(alias);
+    const safeTitle = createSafeToolName(alias);
+    if (alias !== safeName) {
+      sanitizedTools.push({ original: alias, sanitized: safeName });
+    }
+    server.tool(safeName, description, paramSchema as any, { ...metadata, title: safeTitle }, handler);
+  };
+
+  // Calendar wrappers (optional calendarId selector)
+  const registerCalendarWrapper = (alias: string, specificAlias: string) => {
+    const base = getToolDefinitionOrWarn(alias);
+    const specific = getToolDefinitionOrWarn(specificAlias);
+    if (!base || !specific) {
+      return;
+    }
+
+    const schema = {
+      ...cloneParamSchema(base.paramSchema),
+      calendarId: z
+        .string()
+        .describe('Optional calendarId to target a non-primary calendar; defaults to primary when omitted')
+        .optional(),
+    };
+
+    registerWrapperTool(alias, base.description, schema, base.metadata, async (params) => {
+      const { calendarId, ...rest } = params;
+      if (typeof calendarId === 'string' && calendarId.trim().length > 0) {
+        return invokeInternalTool(specificAlias, { ...rest, calendarId });
+      }
+      return invokeInternalTool(alias, rest);
+    });
+  };
+
+  registerCalendarWrapper('list-calendar-events', 'list-specific-calendar-events');
+  registerCalendarWrapper('get-calendar-event', 'get-specific-calendar-event');
+  registerCalendarWrapper('create-calendar-event', 'create-specific-calendar-event');
+  registerCalendarWrapper('update-calendar-event', 'update-specific-calendar-event');
+  registerCalendarWrapper('delete-calendar-event', 'delete-specific-calendar-event');
+
+  // Mail wrappers (folder/shared selectors)
+  const registerListMailWrapper = () => {
+    const base = getToolDefinitionOrWarn('list-mail-messages');
+    const folder = getToolDefinitionOrWarn('list-mail-folder-messages');
+    const shared = getToolDefinitionOrWarn('list-shared-mailbox-messages');
+    const sharedFolder = getToolDefinitionOrWarn('list-shared-mailbox-folder-messages');
+    if (!base || !folder || !shared || !sharedFolder) {
+      return;
+    }
+
+    const schema = {
+      ...cloneParamSchema(base.paramSchema),
+      folderId: z.string().describe('Optional mail folder id to scope results').optional(),
+      sharedMailboxId: z
+        .string()
+        .describe('Optional shared mailbox object id/UPN; takes precedence over sharedMailboxEmail')
+        .optional(),
+      sharedMailboxEmail: z
+        .string()
+        .describe('Optional shared mailbox SMTP address when sharedMailboxId is unknown')
+        .optional(),
+    };
+
+    registerWrapperTool(base.alias, base.description, schema, base.metadata, async (params) => {
+      const { folderId, sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      const sharedTarget =
+        typeof sharedMailboxId === 'string' && sharedMailboxId.trim().length > 0
+          ? sharedMailboxId
+          : typeof sharedMailboxEmail === 'string' && sharedMailboxEmail.trim().length > 0
+          ? sharedMailboxEmail
+          : undefined;
+
+      if (sharedTarget && typeof folderId === 'string' && folderId.trim().length > 0) {
+        return invokeInternalTool('list-shared-mailbox-folder-messages', {
+          ...rest,
+          userId: sharedTarget,
+          mailFolderId: folderId,
+        });
+      }
+
+      if (sharedTarget) {
+        return invokeInternalTool('list-shared-mailbox-messages', { ...rest, userId: sharedTarget });
+      }
+
+      if (typeof folderId === 'string' && folderId.trim().length > 0) {
+        return invokeInternalTool('list-mail-folder-messages', { ...rest, mailFolderId: folderId });
+      }
+
+      return invokeInternalTool('list-mail-messages', rest);
+    });
+  };
+
+  registerListMailWrapper();
+
+  const registerGetMailWrapper = () => {
+    const base = getToolDefinitionOrWarn('get-mail-message');
+    const shared = getToolDefinitionOrWarn('get-shared-mailbox-message');
+    if (!base || !shared) {
+      return;
+    }
+
+    const schema = {
+      ...cloneParamSchema(base.paramSchema),
+      sharedMailboxId: z
+        .string()
+        .describe('Optional shared mailbox object id/UPN; takes precedence over sharedMailboxEmail')
+        .optional(),
+      sharedMailboxEmail: z
+        .string()
+        .describe('Optional shared mailbox SMTP address when sharedMailboxId is unknown')
+        .optional(),
+    };
+
+    registerWrapperTool(base.alias, base.description, schema, base.metadata, async (params) => {
+      const { sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      const sharedTarget =
+        typeof sharedMailboxId === 'string' && sharedMailboxId.trim().length > 0
+          ? sharedMailboxId
+          : typeof sharedMailboxEmail === 'string' && sharedMailboxEmail.trim().length > 0
+          ? sharedMailboxEmail
+          : undefined;
+
+      if (sharedTarget) {
+        return invokeInternalTool('get-shared-mailbox-message', { ...rest, userId: sharedTarget });
+      }
+
+      return invokeInternalTool('get-mail-message', rest);
+    });
+  };
+
+  registerGetMailWrapper();
+
+  const registerSendMailWrapper = () => {
+    const base = getToolDefinitionOrWarn('send-mail');
+    const shared = getToolDefinitionOrWarn('send-shared-mailbox-mail');
+    if (!base || !shared) {
+      return;
+    }
+
+    const schema = {
+      ...cloneParamSchema(base.paramSchema),
+      sharedMailboxId: z
+        .string()
+        .describe('Optional shared mailbox object id/UPN; takes precedence over sharedMailboxEmail')
+        .optional(),
+      sharedMailboxEmail: z
+        .string()
+        .describe('Optional shared mailbox SMTP address when sharedMailboxId is unknown')
+        .optional(),
+    };
+
+    registerWrapperTool(base.alias, base.description, schema, base.metadata, async (params) => {
+      const { sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      const sharedTarget =
+        typeof sharedMailboxId === 'string' && sharedMailboxId.trim().length > 0
+          ? sharedMailboxId
+          : typeof sharedMailboxEmail === 'string' && sharedMailboxEmail.trim().length > 0
+          ? sharedMailboxEmail
+          : undefined;
+
+      if (sharedTarget) {
+        return invokeInternalTool('send-shared-mailbox-mail', { ...rest, userId: sharedTarget });
+      }
+
+      return invokeInternalTool('send-mail', rest);
+    });
+  };
+
+  registerSendMailWrapper();
+
+  // Log big warning if any tools were sanitized
+  if (sanitizedTools.length > 0) {
+    logger.warn('═══════════════════════════════════════════════════════════════════════════════');
+    logger.warn('⚠️  WARNING: TOOL NAME SANITIZATION DETECTED ⚠️');
+    logger.warn('═══════════════════════════════════════════════════════════════════════════════');
+    logger.warn(`${sanitizedTools.length} tool(s) had their names sanitized during registration because they were too long:`);
+    for (const { original, sanitized } of sanitizedTools) {
+      if (TOOL_BLACKLIST.includes(original as any)) {
+        logger.info(`  •OK "${original}" → "${sanitized}" (used in wrapper tool)`);
+      } else {
+        logger.error(`  • "${original}" → "${sanitized}"`);
+      }
+    }
+    logger.warn('This may cause issues on tools not marked as OK.');
+    logger.warn('Consider updating tool names to be shorter.');
+    logger.warn('═══════════════════════════════════════════════════════════════════════════════');
+  }
 }

@@ -57,11 +57,12 @@ services:
     # NOTE: --enable-auth-tools is required so auth-related MCP tools (including
     #       list-impersonated-mailboxes) are registered and visible to LLM clients.
     #       Without this flag, auth tools are disabled by default in HTTP mode.
-    command: ["node", "dist/index.js", "--http", "${MS365_MCP_HTTP_PORT:-3000}", "-v", "--enable-auth-tools"]
+    #       Set MS365_MCP_ENABLE_AUTH_TOOLS=true in .env to enable auth tools.
+    command: ["sh", "-c", "case \"${MS365_MCP_ENABLE_AUTH_TOOLS:-false}\" in true|1|yes|on) AUTH_FLAG=\"--enable-auth-tools\" ;; *) AUTH_FLAG=\"\" ;; esac; node dist/index.js --http ${MS365_MCP_HTTP_PORT:-3000} -v $AUTH_FLAG"]
     # === PORT EXPOSURE (Only for Mode 3 - External Access) ===
-    # Uncomment ONLY if you need to expose HTTP to host machine:
-    # ports:
-    #   - "127.0.0.1:${MS365_MCP_HTTP_PORT:-3000}:${MS365_MCP_HTTP_PORT:-3000}"
+    # Uncomment ONLY if you need to expose HTTP to host machine:a
+    ports:
+      - "127.0.0.1:${MS365_MCP_HTTP_PORT:-3000}:${MS365_MCP_HTTP_PORT:-3000}"
     
     # Environment variables with fallback defaults
     environment:

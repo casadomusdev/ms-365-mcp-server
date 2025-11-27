@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGraphTools } from '../src/graph-tools.js';
 import GraphClient from '../src/graph-client.js';
@@ -6,8 +6,13 @@ import GraphClient from '../src/graph-client.js';
 vi.mock('../src/logger.js', () => ({
   default: {
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+vi.mock('../src/tool-blacklist.js', () => ({
+  TOOL_BLACKLIST: [],
 }));
 
 vi.mock('../src/generated/client.js', () => ({
@@ -37,15 +42,37 @@ vi.mock('../src/generated/client.js', () => ({
   },
 }));
 
+const envBackup = {
+  mail: process.env.MS365_MCP_ENABLE_MAIL,
+  calendar: process.env.MS365_MCP_ENABLE_CALENDAR,
+  files: process.env.MS365_MCP_ENABLE_FILES,
+  excel: process.env.MS365_MCP_ENABLE_EXCEL_POWERPOINT,
+  user: process.env.MS365_MCP_ENABLE_USER,
+};
+
 describe('Tool Filtering', () => {
   let server: McpServer;
   let graphClient: GraphClient;
-  let toolSpy: ReturnType<typeof vi.spyOn>;
+  let toolSpy: MockInstance;
 
   beforeEach(() => {
+    process.env.MS365_MCP_ENABLE_MAIL = 'true';
+    process.env.MS365_MCP_ENABLE_CALENDAR = 'true';
+    process.env.MS365_MCP_ENABLE_FILES = 'true';
+    process.env.MS365_MCP_ENABLE_EXCEL_POWERPOINT = 'true';
+    process.env.MS365_MCP_ENABLE_USER = 'true';
+
     server = new McpServer({ name: 'test', version: '1.0.0' });
     graphClient = {} as GraphClient;
-    toolSpy = vi.spyOn(server, 'tool').mockImplementation(() => {});
+    toolSpy = vi.spyOn(server, 'tool').mockImplementation(() => ({} as any));
+  });
+
+  afterEach(() => {
+    process.env.MS365_MCP_ENABLE_MAIL = envBackup.mail;
+    process.env.MS365_MCP_ENABLE_CALENDAR = envBackup.calendar;
+    process.env.MS365_MCP_ENABLE_FILES = envBackup.files;
+    process.env.MS365_MCP_ENABLE_EXCEL_POWERPOINT = envBackup.excel;
+    process.env.MS365_MCP_ENABLE_USER = envBackup.user;
   });
 
   it('should register all tools when no filter is provided', () => {

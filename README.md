@@ -89,9 +89,9 @@ get-sharepoint-site-drive-by-id, list-sharepoint-site-items, get-sharepoint-site
 get-sharepoint-site-list, list-sharepoint-site-list-items, get-sharepoint-site-list-item,
 get-sharepoint-sites-delta</sub>
 
-**Shared Mailboxes**  
-<sub>list-shared-mailbox-messages, list-shared-mailbox-folder-messages, get-shared-mailbox-message,
-send-shared-mailbox-mail</sub>
+**Shared Mailboxes (via selectors)**  
+<sub>list-mail-messages (folderId/sharedMailboxId/sharedMailboxEmail), get-mail-message
+(sharedMailboxId/sharedMailboxEmail), send-mail (sharedMailboxId/sharedMailboxEmail)</sub>
 
 **User Management**  
 <sub>list-users</sub>
@@ -121,7 +121,8 @@ To access shared mailboxes, you need:
 1. **Organization mode**: Shared mailbox tools require `--org-mode` flag (work/school accounts only)
 2. **Delegated permissions**: `Mail.Read.Shared` or `Mail.Send.Shared` scopes
 3. **Exchange permissions**: The signed-in user must have been granted access to the shared mailbox
-4. **Usage**: Use the shared mailbox's email address as the `user-id` parameter in the shared mailbox tools
+4. **Usage**: Invoke `list-mail-messages`, `get-mail-message`, or `send-mail` and provide either `sharedMailboxId`
+   (preferred UPN/object id) or `sharedMailboxEmail`. Combine with `folderId` when you must scope to a specific folder.
 
 ### Shared Mailbox Discovery (PowerShell Integration)
 
@@ -137,7 +138,20 @@ This provides accurate shared mailbox detection that's not possible via Microsof
 
 **Finding shared mailboxes**: Use the `list-users` tool to discover available users and shared mailboxes in your organization.
 
-Example: `list-shared-mailbox-messages` with `user-id` set to `shared-mailbox@company.com`
+Example: `list-mail-messages` with `sharedMailboxEmail: "shared-mailbox@company.com"` (and optional `folderId`).
+
+## Outlook Tool Routing
+
+To keep the MCP surface area small, the Outlook tools behave as smart wrappers:
+
+- `list-calendar-events`, `get-calendar-event`, `create-calendar-event`, `update-calendar-event`, and
+  `delete-calendar-event` all accept an optional `calendarId`. Omit it for the primary calendar or pass an id returned
+  by `list-calendars` to target a specific calendar.
+- `list-mail-messages` accepts optional `folderId` plus `sharedMailboxId`/`sharedMailboxEmail`. When neither shared
+  selector is provided the call runs against the signed-in mailbox; supplying both a shared mailbox and `folderId`
+  targets that folder inside the shared mailbox.
+- `get-mail-message` and `send-mail` share the same `sharedMailboxId`/`sharedMailboxEmail` selectors to fetch or send on
+  behalf of a shared mailbox without exposing dedicated shared-mailbox tool IDs.
 
 ## Getting Started
 
