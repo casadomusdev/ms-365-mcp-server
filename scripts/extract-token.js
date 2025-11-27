@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import AuthManager, { buildScopesFromEndpoints } from './dist/auth.js';
+import AuthManager, { buildScopesFromEndpoints } from '../dist/auth.js';
 
 async function extractToken() {
   try {
