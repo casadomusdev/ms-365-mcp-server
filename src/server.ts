@@ -69,6 +69,7 @@ class MicrosoftGraphServer {
     registerGraphTools(
       this.server,
       this.graphClient,
+      this.authManager as unknown as import('./auth.js').default,
       this.options.readOnly,
       this.options.enabledTools,
       this.options.orgMode

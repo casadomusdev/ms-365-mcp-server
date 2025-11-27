@@ -98,6 +98,8 @@ class AuthManager {
   private msalApp: PublicClientApplication | ConfidentialClientApplication;
   private accessToken: string | null;
   private tokenExpiry: number | null;
+  private exchangeToken: string | null;
+  private exchangeTokenExpiry: number | null;
   private oauthToken: string | null;
   private isOAuthMode: boolean;
   private isClientCredentialsMode: boolean;
@@ -111,6 +113,8 @@ class AuthManager {
     this.scopes = scopes;
     this.accessToken = null;
     this.tokenExpiry = null;
+    this.exchangeToken = null;
+    this.exchangeTokenExpiry = null;
     this.selectedAccountId = null;
 
     // Check for OAuth token mode
@@ -319,6 +323,59 @@ class AuthManager {
     }
 
     throw new Error('No valid token found');
+  }
+
+  async getExchangeToken(forceRefresh = false): Promise<string | null> {
+    // Check cache first
+    if (this.exchangeToken && this.exchangeTokenExpiry && this.exchangeTokenExpiry > Date.now() && !forceRefresh) {
+      return this.exchangeToken;
+    }
+
+    // Client credentials flow - no user account needed
+    if (this.isClientCredentialsMode) {
+      try {
+        const response = await (this.msalApp as ConfidentialClientApplication).acquireTokenByClientCredential({
+          scopes: ['https://outlook.office365.com/.default'],
+        });
+        
+        if (response) {
+          this.exchangeToken = response.accessToken;
+          this.exchangeTokenExpiry = response.expiresOn ? new Date(response.expiresOn).getTime() : null;
+          await this.saveTokenCache();
+          logger.info('Exchange token acquired successfully (client credentials)');
+          return this.exchangeToken;
+        }
+        
+        throw new Error('Exchange token acquisition returned no response');
+      } catch (error) {
+        logger.error(`Exchange token acquisition failed: ${(error as Error).message}`);
+        throw new Error(`Exchange token acquisition failed: ${(error as Error).message}`);
+      }
+    }
+
+    // Device code flow - requires user account
+    const currentAccount = await this.getCurrentAccount();
+
+    if (currentAccount) {
+      const silentRequest = {
+        account: currentAccount,
+        scopes: ['https://outlook.office365.com/.default'],
+      };
+
+      try {
+        const response = await this.msalApp.acquireTokenSilent(silentRequest);
+        this.exchangeToken = response.accessToken;
+        this.exchangeTokenExpiry = response.expiresOn ? new Date(response.expiresOn).getTime() : null;
+        await this.saveTokenCache();
+        logger.info('Exchange token acquired successfully (device code)');
+        return this.exchangeToken;
+      } catch (error) {
+        logger.error(`Exchange silent token acquisition failed: ${(error as Error).message}`);
+        throw new Error(`Exchange silent token acquisition failed: ${(error as Error).message}`);
+      }
+    }
+
+    throw new Error('No valid Exchange token found');
   }
 
   async getCurrentAccount(): Promise<AccountInfo | null> {
@@ -658,13 +715,15 @@ class AuthManager {
         // Clear cache if requested
         if (options?.clearCache) {
           const { MailboxDiscoveryCache } = await import('./impersonation/MailboxDiscoveryCache.js');
-          const cache = new MailboxDiscoveryCache(tempGraphClient);
+          const cache = new MailboxDiscoveryCache(tempGraphClient, this);
           cache.clearCache();
           logger.info('Mailbox discovery cache cleared');
         }
-        
-        // Use centralized discovery service
-        const service = new MailboxDiscoveryService(tempGraphClient);
+
+        // Use centralized discovery service with PowerShell support
+        const { default: PowerShellService } = await import('./lib/PowerShellService.js');
+        const powerShellService = new PowerShellService(this);
+        const service = new MailboxDiscoveryService(tempGraphClient, powerShellService);
         const mailboxes = await service.discoverMailboxes(impersonateUser);
         
         // Format response for CLI/auth tool

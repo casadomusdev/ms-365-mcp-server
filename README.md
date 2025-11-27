@@ -12,6 +12,24 @@ API.
 - Node.js >= 20 (recommended)
 - Node.js 14+ may work with dependency warnings
 
+### Optional: PowerShell Integration for Shared Mailboxes
+
+For accurate shared mailbox discovery via Exchange Online permissions:
+
+- **PowerShell Core 7.x** (not Windows PowerShell 5.1)
+- **Exchange Online PowerShell Module v3.x**
+- **Certificate authentication** (required for client credentials/app permissions mode)
+
+The server **auto-detects** PowerShell availability and gracefully falls back to personal mailbox only if not found. See [docs/powershell-setup.md](docs/powershell-setup.md) for installation and certificate setup.
+
+**Quick install on macOS:**
+```bash
+brew install --cask powershell
+pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Force"
+```
+
+**Status:** Enabled by default with auto-detection (set `MS365_POWERSHELL_ENABLED=false` to disable)
+
 ## Features
 
 - Authentication via Microsoft Authentication Library (MSAL)
@@ -105,8 +123,19 @@ To access shared mailboxes, you need:
 3. **Exchange permissions**: The signed-in user must have been granted access to the shared mailbox
 4. **Usage**: Use the shared mailbox's email address as the `user-id` parameter in the shared mailbox tools
 
-**Finding shared mailboxes**: Use the `list-users` tool to discover available users and shared mailboxes in your
-organization.
+### Shared Mailbox Discovery (PowerShell Integration)
+
+For **impersonation mode** (client credentials flow), the server can automatically discover which shared mailboxes a user has access to:
+
+- **Method**: Exchange Online PowerShell with certificate authentication
+- **Status**: Enabled by default with auto-detection
+- **Requirements**: PowerShell Core 7.x + Exchange Online module + certificate (see [docs/powershell-setup.md](docs/powershell-setup.md))
+- **Fallback**: If PowerShell unavailable, only personal mailbox is accessible (with warning logged)
+- **Performance**: ~2-5s first query, then cached for 1 hour
+
+This provides accurate shared mailbox detection that's not possible via Microsoft Graph API alone.
+
+**Finding shared mailboxes**: Use the `list-users` tool to discover available users and shared mailboxes in your organization.
 
 Example: `list-shared-mailbox-messages` with `user-id` set to `shared-mailbox@company.com`
 
@@ -131,9 +160,11 @@ cp .env.example .env
 ./auth-verify.sh
 ```
 
-**See [QUICK_START.md](QUICK_START.md) for complete setup guide with all available scripts.**
+**See [docs/quick-start.md](docs/quick-start.md) for complete setup guide with all available scripts.**
 
-For production deployments, see [SERVER_SETUP.md](SERVER_SETUP.md).
+For production deployments, see [docs/server-setup.md](docs/server-setup.md).
+
+📚 **Full documentation:** See [docs/README.md](docs/README.md) for all available guides.
 
 ### NPM Package Usage
 

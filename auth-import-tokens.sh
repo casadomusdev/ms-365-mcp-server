@@ -221,14 +221,49 @@ else
     fi
 fi
 
+# Import PowerShell certificate if present in archive
+CERT_IMPORTED=false
+if [ -f "$EXTRACT_DIR/tokens/certs/ms365-powershell.pfx" ]; then
+    echo ""
+    echo "PowerShell certificate found in archive..."
+    
+    # Create certs directory
+    mkdir -p "$SCRIPT_DIR/certs"
+    
+    # Copy certificate files
+    cp "$EXTRACT_DIR/tokens/certs/ms365-powershell.pfx" "$SCRIPT_DIR/certs/ms365-powershell.pfx"
+    if [ -f "$EXTRACT_DIR/tokens/certs/ms365-powershell.cer" ]; then
+        cp "$EXTRACT_DIR/tokens/certs/ms365-powershell.cer" "$SCRIPT_DIR/certs/ms365-powershell.cer"
+    fi
+    
+    # Import certificate password to backup file
+    if [ -f "$EXTRACT_DIR/tokens/certs/.cert-password.txt" ]; then
+        cp "$EXTRACT_DIR/tokens/certs/.cert-password.txt" "$SCRIPT_DIR/certs/.cert-password.txt"
+        chmod 600 "$SCRIPT_DIR/certs/.cert-password.txt"
+        CERT_IMPORTED=true
+        echo -e "${GREEN}✓ PowerShell certificate imported${NC}"
+        echo -e "${GREEN}✓ Certificate password saved${NC}"
+        echo -e "${CYAN}ℹ PowerShellService will automatically use the certificate${NC}"
+    else
+        echo -e "${YELLOW}⚠ Certificate found but password missing${NC}"
+        echo "  Certificate may not work without password file"
+    fi
+fi
+
 # Report result
 if [ "$IMPORT_SUCCESS" = true ]; then
     echo ""
     echo -e "${GREEN}✓ Tokens imported successfully${NC}"
+    if [ "$CERT_IMPORTED" = true ]; then
+        echo -e "${GREEN}✓ PowerShell certificate imported${NC}"
+    fi
     echo ""
     echo "Import Details:"
     echo "  Location: $IMPORT_LOCATION"
     echo "  Mode: $IMPORT_MODE"
+    if [ "$CERT_IMPORTED" = true ]; then
+        echo "  Certificate: Imported to ./certs/"
+    fi
     echo ""
     
     if [ "$IMPORT_MODE" = "file" ]; then

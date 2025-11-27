@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import logger from './logger.js';
 import GraphClient from './graph-client.js';
+import type AuthManager from './auth.js';
 import { api } from './generated/client.js';
 import { z } from 'zod';
 import { readFileSync } from 'fs';
@@ -115,13 +116,14 @@ let sharedMailboxCache: MailboxDiscoveryCache | null = null;
 export function registerGraphTools(
   server: McpServer,
   graphClient: GraphClient,
+  authManager: AuthManager,
   readOnly: boolean = false,
   enabledToolsPattern?: string,
   orgMode: boolean = false
 ): void {
   // Initialize shared cache on first registration
   if (!sharedMailboxCache) {
-    sharedMailboxCache = new MailboxDiscoveryCache(graphClient);
+    sharedMailboxCache = new MailboxDiscoveryCache(graphClient, authManager);
     logger.info('Initialized shared mailbox discovery cache');
   }
 

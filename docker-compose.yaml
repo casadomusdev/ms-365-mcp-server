@@ -119,6 +119,14 @@ services:
       MS365_MCP_IMPERSONATE_REWRITE_ME: ${MS365_MCP_IMPERSONATE_REWRITE_ME:-true}
       # Extra logging for impersonation resolution and enforcement.
       MS365_MCP_IMPERSONATE_DEBUG: ${MS365_MCP_IMPERSONATE_DEBUG:-false}
+      
+      # PowerShell Integration (Shared Mailbox Discovery)
+      # Enable PowerShell-based shared mailbox permission checking (requires PowerShell Core 7.x)
+      # Default: enabled (auto-detects pwsh availability, gracefully falls back if not found)
+      # Set to 'false' to explicitly disable
+      MS365_MCP_POWERSHELL_ENABLED: ${MS365_MCP_POWERSHELL_ENABLED:-true}
+      # Timeout for PowerShell script execution (milliseconds)
+      MS365_MCP_POWERSHELL_TIMEOUT: ${MS365_MCP_POWERSHELL_TIMEOUT:-30000}
     
     # Mount volume for persistent token cache
     volumes:

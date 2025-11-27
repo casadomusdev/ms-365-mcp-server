@@ -23,14 +23,28 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# Install dumb-init and runtime dependencies for keytar and health checks
+# Install dependencies including PowerShell Core
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     dumb-init \
     curl \
     iputils-ping \
     libsecret-1-0 \
-    jq && \
+    jq \
+    wget \
+    apt-transport-https \
+    software-properties-common && \
+    # Install PowerShell Core
+    wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb && \
+    dpkg -i packages-microsoft-prod.deb && \
+    rm packages-microsoft-prod.deb && \
+    apt-get update && \
+    apt-get install -y powershell && \
+    # Install Exchange Online PowerShell module
+    pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted" && \
+    pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Force -AllowClobber -Scope AllUsers" && \
+    # Cleanup
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy package files

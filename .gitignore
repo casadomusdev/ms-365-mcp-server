@@ -148,6 +148,11 @@ tokens-backup/
 tokens-*/
 *.tar.gz.gpg
 
+# PowerShell certificates (contains private keys and passwords)
+certs/
+*.pfx
+*.cer
+
 # Docker volume data directory
 data/
 

@@ -1,6 +1,8 @@
 import logger from '../logger.js';
 import type GraphClient from '../graph-client.js';
+import type AuthManager from '../auth.js';
 import { MailboxDiscoveryService } from './MailboxDiscoveryService.js';
+import PowerShellService from '../lib/PowerShellService.js';
 
 /**
  * Mailbox information with type and permissions.
@@ -56,9 +58,14 @@ export class MailboxDiscoveryCache {
    * Creates a new MailboxDiscoveryCache instance.
    * 
    * @param graphClient - Authenticated GraphClient instance for making Microsoft Graph API calls
+   * @param authManager - AuthManager instance for PowerShell authentication
    */
-  constructor(graphClient: GraphClient) {
-    this.service = new MailboxDiscoveryService(graphClient);
+  constructor(graphClient: GraphClient, authManager: AuthManager) {
+    // Create PowerShellService for mailbox discovery
+    const powerShellService = new PowerShellService(authManager);
+    
+    // Create discovery service with optional PowerShell support
+    this.service = new MailboxDiscoveryService(graphClient, powerShellService);
     
     const ttlSec = Number(process.env.MS365_MCP_IMPERSONATE_CACHE_TTL || '3600');
     this.cacheTTLms = Math.max(60, ttlSec) * 1000;

@@ -29,23 +29,28 @@ Request → Check HTTP Header → Check Context → Check Env Var → Use First 
 
 ### Mailbox Discovery
 
-Once a user is identified for impersonation, the server automatically discovers which mailboxes they can access using **calendar delegation detection**:
+Once a user is identified for impersonation, the server automatically discovers which mailboxes they can access using **PowerShell-based permission checking** (when available) or **personal mailbox only** (fallback):
 
-**Detection Strategy:**
-- Queries all shared mailboxes in the tenant (unlicensed, enabled accounts)
-- For each shared mailbox, checks `/calendar/calendarPermissions` endpoint
-- Includes mailboxes where the user has calendar delegation permissions
+**PowerShell Detection Strategy (Default - Enabled with Auto-Detection):**
+- Uses Exchange Online PowerShell to query actual mailbox permissions
+- Detects Full Access and SendAs permissions on shared mailboxes
+- Provides accurate shared mailbox discovery not available via Graph API
+- **Auto-detects** PowerShell availability - gracefully falls back if unavailable
+- See [POWERSHELL_SETUP.md](POWERSHELL_SETUP.md) for installation and configuration
 
-**Important Limitations:**
-- ⚠️ Only detects mailboxes where the user has **calendar delegation**
-- ❌ Does NOT detect: SendAs-only permissions, Full Access without calendar access
-- ℹ️ Exchange mailbox delegation permissions (SendAs, Full Access) cannot be reliably queried via Microsoft Graph API
-- ℹ️ For full delegation detection, Exchange PowerShell or EWS is required (not available in this implementation)
+**Graph API Fallback (No PowerShell):**
+- If PowerShell unavailable, only personal mailbox is discovered
+- Warning logged at startup if PowerShell not found
+- No additional configuration needed to try PowerShell - auto-detected
 
-**Why Calendar Delegation?**
-- Calendar delegation is the ONLY reliable indicator available via Graph API
-- Users with full mailbox access typically also have calendar delegation
-- More efficient than checking all tenant users
+**Why PowerShell?**
+- Exchange delegation permissions (Full Access, SendAs) are NOT exposed via Microsoft Graph API
+- PowerShell is the ONLY programmatic way to query these permissions
+- Works with existing access token - no additional authentication needed
+
+**Performance:**
+- First query: ~2-5 seconds (PowerShell execution)
+- Subsequent queries: < 10ms (1-hour cache)
 
 ### Caching Architecture
 

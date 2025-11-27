@@ -19,6 +19,12 @@ The server runs in Docker using STDIO mode with automatic token refresh:
 - Outbound HTTPS access to `login.microsoftonline.com` and `graph.microsoft.com`
 - SSH access for initial setup
 
+**Optional - PowerShell for Shared Mailbox Discovery:**
+- PowerShell Core 7.x installed (for impersonation mode shared mailbox discovery)
+- Exchange Online PowerShell Module v3.x
+- **Auto-detected** by the server - gracefully falls back if not available
+- See [POWERSHELL_SETUP.md](POWERSHELL_SETUP.md) for installation details
+
 **Microsoft 365:**
 - Microsoft 365 Business account
 - Azure AD admin access for app registration

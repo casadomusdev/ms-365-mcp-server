@@ -89,6 +89,45 @@ if [ -n "$CLIENT_SECRET" ]; then
     echo "  MS365_MCP_CLIENT_SECRET is configured"
     echo "  No interactive login required - using app permissions"
     echo ""
+    
+    # Check if PowerShell certificate is configured
+    if [ -f .env ]; then
+        CERT_PATH=$(grep "^MS365_CERT_PATH=" .env | cut -d '=' -f2)
+    fi
+    
+    # Check if certificate exists
+    if [ -z "$CERT_PATH" ] || [ ! -f "$CERT_PATH" ]; then
+        echo -e "${YELLOW}⚠ PowerShell Certificate Not Found${NC}"
+        echo ""
+        echo "For shared mailbox discovery, you need a PowerShell certificate."
+        echo "This is required for Exchange Online app-only authentication."
+        echo ""
+        read -p "Generate PowerShell certificate now? (Y/n): " -n 1 -r
+        echo
+        
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo ""
+            if "$SCRIPT_DIR/auth-generate-cert.sh"; then
+                echo ""
+                echo -e "${GREEN}✓ Certificate generated successfully${NC}"
+                echo ""
+            else
+                echo ""
+                echo -e "${YELLOW}⚠ Certificate generation failed or was skipped${NC}"
+                echo "  You can generate it later with: ./auth-generate-cert.sh"
+                echo ""
+            fi
+        else
+            echo ""
+            echo "Skipping certificate generation."
+            echo "Run './auth-generate-cert.sh' later to enable PowerShell features."
+            echo ""
+        fi
+    else
+        echo -e "${GREEN}✓ PowerShell certificate found${NC}"
+        echo ""
+    fi
+    
     echo "Verifying connectivity with Microsoft Graph API..."
     
     # In client credentials mode, just verify that the setup works

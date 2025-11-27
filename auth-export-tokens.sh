@@ -67,7 +67,7 @@ else
             cp "$SCRIPT_DIR/.token-cache.json" "$TEMP_DIR/.token-cache.json"
             TOKENS_FOUND=true
         elif [ -f /app/data/.token-cache.json ]; then
-            cp /app/data/.token-cache.json "$TEMP_DIR/.token-cache.json"
+            cp /app/data/.token-cache.json" "$TEMP_DIR/.token-cache.json"
             TOKENS_FOUND=true
         fi
         
@@ -75,7 +75,7 @@ else
         if [ -f "$SCRIPT_DIR/.selected-account.json" ]; then
             cp "$SCRIPT_DIR/.selected-account.json" "$TEMP_DIR/.selected-account.json"
         elif [ -f /app/data/.selected-account.json ]; then
-            cp /app/data/.selected-account.json "$TEMP_DIR/.selected-account.json"
+            cp /app/data/.selected-account.json" "$TEMP_DIR/.selected-account.json"
         fi
         
         if [ "$TOKENS_FOUND" = true ]; then
@@ -120,6 +120,23 @@ if [ -f "$TEMP_DIR/.selected-account.json" ]; then
     cp "$TEMP_DIR/.selected-account.json" "$ARCHIVE_DIR/tokens/.selected-account.json"
 fi
 
+# Include PowerShell certificate if it exists
+CERT_INCLUDED=false
+if [ -f "$SCRIPT_DIR/certs/ms365-powershell.pfx" ]; then
+    echo "Including PowerShell certificate..."
+    mkdir -p "$ARCHIVE_DIR/tokens/certs"
+    cp "$SCRIPT_DIR/certs/ms365-powershell.pfx" "$ARCHIVE_DIR/tokens/certs/ms365-powershell.pfx"
+    cp "$SCRIPT_DIR/certs/ms365-powershell.cer" "$ARCHIVE_DIR/tokens/certs/ms365-powershell.cer" 2>/dev/null || true
+    CERT_INCLUDED=true
+    echo -e "${GREEN}✓ PowerShell certificate included${NC}"
+fi
+
+# Include certificate password from backup file if available
+if [ -f "$SCRIPT_DIR/certs/.cert-password.txt" ] && [ "$CERT_INCLUDED" = true ]; then
+    cp "$SCRIPT_DIR/certs/.cert-password.txt" "$ARCHIVE_DIR/tokens/certs/.cert-password.txt"
+    echo -e "${GREEN}✓ Certificate password included${NC}"
+fi
+
 # Create metadata file
 cat > "$ARCHIVE_DIR/tokens/export-info.txt" << EOF
 MS-365 MCP Server Token Export
@@ -129,6 +146,7 @@ Export Date: $(date '+%Y-%m-%d %H:%M:%S %Z')
 Hostname: $(hostname)
 Export Mode: $TOKEN_LOCATION
 Source: $EXECUTION_MODE
+$([ "$CERT_INCLUDED" = true ] && echo "Certificate: Included (PFX + password)")
 
 Files Included:
 $(ls -1 "$ARCHIVE_DIR/tokens/" | grep -v "export-info.txt" | sed 's/^/  - /')
@@ -136,9 +154,11 @@ $(ls -1 "$ARCHIVE_DIR/tokens/" | grep -v "export-info.txt" | sed 's/^/  - /')
 Important:
 - Keep this file secure and encrypted
 - Tokens provide access to your Microsoft 365 account
+$([ "$CERT_INCLUDED" = true ] && echo "- Certificate is portable - works on any machine")
 - Import on target machine with: ./auth-import-tokens.sh $OUTPUT_FILE
 - Use --to-keychain flag to import into keychain
 - Use --to-file flag to import into file-based storage
+$([ "$CERT_INCLUDED" = true ] && echo "- Certificate auto-imported to certs/ directory")
 EOF
 
 # Create compressed archive
@@ -157,15 +177,24 @@ if [ -f "$OUTPUT_FILE" ]; then
     echo "  File: $OUTPUT_FILE"
     echo "  Size: $FILE_SIZE"
     echo "  Source: $TOKEN_LOCATION"
+    if [ "$CERT_INCLUDED" = true ]; then
+        echo "  Certificate: Included"
+    fi
     echo ""
     echo -e "${YELLOW}⚠  SECURITY WARNING:${NC}"
     echo "  This file contains sensitive authentication tokens."
+    if [ "$CERT_INCLUDED" = true ]; then
+        echo "  This file also contains the PowerShell certificate + password."
+    fi
     echo "  Store it securely and transport it safely."
     echo ""
     echo "To import on another machine:"
     echo "  1. Transfer the file securely (scp, encrypted transfer, etc.)"
     echo "  2. Import to keychain: ./auth-import-tokens.sh $OUTPUT_FILE --to-keychain"
     echo "  3. Or import to files: ./auth-import-tokens.sh $OUTPUT_FILE --to-file"
+    if [ "$CERT_INCLUDED" = true ]; then
+        echo "  4. Certificate will be auto-imported to certs/ directory"
+    fi
     echo ""
     exit 0
 else

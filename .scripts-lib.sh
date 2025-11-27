@@ -16,6 +16,28 @@ export YELLOW='\033[1;33m'
 export CYAN='\033[0;36m'
 export NC='\033[0m' # No Color
 
+# Helper functions for colored output
+echo_section() {
+    echo -e "${CYAN}$1${NC}"
+    echo -e "${CYAN}$(printf '=%.0s' {1..${#1}})${NC}"
+}
+
+echo_error() {
+    echo -e "${RED}✗ $1${NC}" >&2
+}
+
+echo_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+echo_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+
+echo_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
 # Detect execution mode
 # Sets EXECUTION_MODE to either:
 #   - "direct" = run Node.js directly (inside container or local machine)
