@@ -29,8 +29,7 @@ describe('Dry-run mock mode via DRYRUN_FILE', () => {
 
   it('routes GET through mocks when overrides file exists', async () => {
     const fetchSpy = vi.fn();
-    // @ts-ignore
-    global.fetch = fetchSpy;
+    (global as any).fetch = fetchSpy;
 
     const client = new GraphClient(authManager as any);
     const result = await client.makeRequest('/me/messages', { method: 'GET' });
@@ -41,5 +40,3 @@ describe('Dry-run mock mode via DRYRUN_FILE', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
-
-

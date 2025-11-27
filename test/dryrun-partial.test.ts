@@ -36,8 +36,7 @@ describe('Dry-run partial mode', () => {
       text: async () => JSON.stringify({ value: [{ id: '1' }] }),
       headers: { get: () => null },
     }));
-    // @ts-ignore
-    global.fetch = fetchSpy;
+    (global as any).fetch = fetchSpy;
 
     const client = new GraphClient(authManager as any);
     const result = await client.makeRequest('/me/messages', { method: 'GET' });
@@ -49,8 +48,7 @@ describe('Dry-run partial mode', () => {
 
   it('suppresses POST requests and returns accepted without calling fetch', async () => {
     const fetchSpy = vi.fn();
-    // @ts-ignore
-    global.fetch = fetchSpy;
+    (global as any).fetch = fetchSpy;
 
     const client = new GraphClient(authManager as any);
     const result = await client.makeRequest('/me/sendMail', {
@@ -63,5 +61,3 @@ describe('Dry-run partial mode', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
-
-

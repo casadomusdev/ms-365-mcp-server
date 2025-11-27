@@ -162,7 +162,9 @@ class MicrosoftGraphServer {
       if (mode !== 'off') {
         logger.info('[DRYRUN] active', { mode });
       }
-    } catch {}
+    } catch {
+      // Ignore errors from getDryrunMode - mode detection should not prevent startup
+    }
 
     // Debug: Check if environment variables are loaded
     logger.info('Environment Variables Check:', {
@@ -279,6 +281,7 @@ class MicrosoftGraphServer {
           b.count += 1;
           return next();
         } catch {
+          // Rate limiting errors should not block requests - fail open
           return next();
         }
       });
@@ -295,7 +298,9 @@ class MicrosoftGraphServer {
             ImpersonationContext.setImpersonatedUser(email);
             logger.debug(`Impersonation active for request: ${email}`);
           }
-        } catch {}
+        } catch {
+          // Ignore impersonation setup errors - should not prevent request processing
+        }
         next();
       });
 
@@ -308,7 +313,9 @@ class MicrosoftGraphServer {
             jsonrpcMethod = (req.body as any).method;
             jsonrpcId = (req.body as any).id;
           }
-        } catch {}
+        } catch {
+          // Ignore JSON parsing errors in logging - should not affect request processing
+        }
 
         logger.debug('Incoming MCP request', {
           method: req.method,
@@ -633,7 +640,9 @@ class MicrosoftGraphServer {
                   preview: (bodyStr || '').slice(0, maxReqPreview),
                   truncated: (bodyStr?.length || 0) > maxReqPreview,
                 });
-              } catch {}
+              } catch {
+                // Ignore debug logging errors - should not affect request processing
+              }
             }
 
             const t0 = Date.now();

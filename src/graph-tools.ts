@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import logger from './logger.js';
 import GraphClient from './graph-client.js';
+import type AuthManager from './auth.js';
 import { api } from './generated/client.js';
 import { z } from 'zod';
 import { readFileSync } from 'fs';
@@ -12,8 +13,6 @@ import { getToolDescription } from './tool-descriptions.js';
 import {
   ImpersonationContext,
   MailboxDiscoveryCache,
-  UserValidationCache,
-  ImpersonationResolver
 } from './impersonation/index.js';
 import { TOOL_BLACKLIST } from './tool-blacklist.js';
 
@@ -28,7 +27,7 @@ function sanitizeAqsSearch(value: string): string {
   const raw = String(value ?? '').trim();
   if (raw.length === 0) return raw;
 
-  const hasAdvancedSyntax = /[\(\)]/.test(raw) || /\bAND\b|\bOR\b|\bNOT\b/i.test(raw) || raw.includes(':') || raw.includes('"');
+  const hasAdvancedSyntax = /[()]/.test(raw) || /\bAND\b|\bOR\b|\bNOT\b/i.test(raw) || raw.includes(':') || raw.includes('"');
   if (hasAdvancedSyntax) {
     return raw;
   }

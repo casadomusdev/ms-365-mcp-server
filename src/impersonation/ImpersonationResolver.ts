@@ -159,12 +159,7 @@ export class ImpersonationResolver {
 
     // Optionally validate existence
     if (this.validationCache) {
-      try {
-        await this.validationCache.validateUser(email);
-      } catch (error) {
-        // Re-throw with original message (UserValidationCache already provides good messages)
-        throw error;
-      }
+      await this.validationCache.validateUser(email);
     }
   }
 
