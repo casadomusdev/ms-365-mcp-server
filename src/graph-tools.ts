@@ -296,7 +296,140 @@ export function registerGraphTools(
 
   const toolDefinitions = new Map<string, GraphToolDefinition>();
   const sanitizedTools: Array<{ original: string; sanitized: string }> = [];
-  
+  const rsvpEnabledAliases = new Set(['update-calendar-event', 'update-specific-calendar-event']);
+  const recentEventCache = new Map<string, Set<string>>();
+  const responseActionEnum = z
+    .enum(['accept', 'decline', 'tentative'])
+    .describe(
+      'RSVP action to take. Preferred way to accept/decline/tentatively accept without providing attendees.'
+    );
+  const responseStatusEnum = z
+    .enum(['accepted', 'declined', 'tentativelyAccepted'])
+    .describe('Graph RSVP status values (accepted / declined / tentativelyAccepted).');
+  const rememberEventsForUser = (userEmail: string | undefined, eventIds: string[]) => {
+    if (!userEmail || eventIds.length === 0) return;
+    const normalized = userEmail.toLowerCase();
+    const existing = recentEventCache.get(normalized) ?? new Set<string>();
+    for (const id of eventIds) {
+      if (typeof id === 'string' && id.trim().length > 0) {
+        existing.add(id);
+      }
+    }
+    recentEventCache.set(normalized, existing);
+  };
+
+  const annotateMessageObject = (message: any, mailboxKey: string | undefined, ordinal?: number): void => {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+    if (typeof message.id === 'string' && message.id.trim().length > 0) {
+      message.messageIdToUse = message.id;
+      message._useThisMessageIdForActions = message.id;
+    }
+    if (typeof ordinal === 'number') {
+      message._messageIndex = ordinal;
+    }
+    if (mailboxKey) {
+      message._mailboxKeyUsed = mailboxKey;
+    }
+    if (typeof message.parentFolderId === 'string') {
+      message._parentFolderIdHint = message.parentFolderId;
+    }
+    if (Object.prototype.hasOwnProperty.call(message, 'isDraft')) {
+      message._isDraftMessage = message.isDraft === true;
+    }
+    if (typeof message.lastModifiedDateTime === 'string') {
+      message._lastModifiedDateTime = message.lastModifiedDateTime;
+    }
+    message._selectionHint = buildMessageSelectionHint(message, ordinal);
+  };
+
+  const buildMessageSelectionHint = (message: any, ordinal?: number): string => {
+    const parts: string[] = [];
+    if (typeof ordinal === 'number') {
+      parts.push(`#${ordinal}`);
+    }
+
+    const stateLabels: string[] = [];
+    if (message.isDraft === true) {
+      stateLabels.push('draft');
+    }
+    if (message.isRead === false) {
+      stateLabels.push('unread');
+    }
+    if (stateLabels.length === 0) {
+      stateLabels.push('message');
+    }
+    parts.push(stateLabels.join('+'));
+
+    const subject =
+      typeof message.subject === 'string' && message.subject.trim().length > 0
+        ? `subject "${message.subject.slice(0, 60)}${message.subject.length > 60 ? '…' : ''}"`
+        : 'subject <none>';
+    parts.push(subject);
+
+    const lastModified =
+      message.lastModifiedDateTime || message.createdDateTime || message.receivedDateTime;
+    if (typeof lastModified === 'string') {
+      parts.push(`lastModified ${lastModified}`);
+    }
+
+    let attachmentInfo: string | undefined;
+    if (Array.isArray(message.attachments)) {
+      attachmentInfo = `attachments:${message.attachments.length}`;
+    } else if (typeof message.hasAttachments === 'boolean') {
+      attachmentInfo = `attachments:${message.hasAttachments ? 'yes' : 'no'}`;
+    }
+    if (attachmentInfo) {
+      parts.push(attachmentInfo);
+    }
+
+    const truncatedId =
+      typeof message.messageIdToUse === 'string'
+        ? message.messageIdToUse.slice(0, 16)
+        : typeof message.id === 'string'
+        ? message.id.slice(0, 16)
+        : undefined;
+    if (truncatedId) {
+      parts.push(`id ${truncatedId}${truncatedId.length === 16 ? '…' : ''}`);
+    }
+
+    return parts.join(' | ');
+  };
+
+  const resolveMailboxKey = (
+    impersonated: string | undefined,
+    params: Record<string, unknown>,
+    path: string,
+    resolvedPathParams: Record<string, string>
+  ): string | undefined => {
+    const paramObject = params as Record<string, unknown>;
+    const userParam =
+      (typeof paramObject.userId === 'string' && paramObject.userId) ||
+      (typeof paramObject['user-id'] === 'string' && (paramObject['user-id'] as string)) ||
+      resolvedPathParams.userId;
+    if (typeof userParam === 'string' && userParam.trim().length > 0) {
+      return userParam.toLowerCase();
+    }
+    const userMatch = path.match(/\/users\/([^/?]+)/i);
+    if (userMatch && typeof userMatch[1] === 'string') {
+      try {
+        return decodeURIComponent(userMatch[1]).toLowerCase();
+      } catch {
+        return userMatch[1].toLowerCase();
+      }
+    }
+    return impersonated?.toLowerCase();
+  };
+
+  const mailListAliases = new Set([
+    'list-mail-messages',
+    'list-mail-folder-messages',
+    'list-shared-mailbox-messages',
+    'list-shared-mailbox-folder-messages',
+  ]);
+  const mailSingleMessageAliases = new Set(['get-mail-message', 'get-shared-mailbox-message']);
+
   for (const tool of api.endpoints) {
     const endpointConfig = endpointsData.find((e) => e.toolName === tool.alias);
     if (!orgMode && endpointConfig && !endpointConfig.scopes && endpointConfig.workScopes) {
@@ -331,6 +464,39 @@ export function registerGraphTools(
       paramSchema['fetchAllPages'] = z
         .boolean()
         .describe('Automatically fetch all pages of results')
+        .optional();
+    }
+
+    if (rsvpEnabledAliases.has(tool.alias)) {
+      paramSchema['responseAction'] = responseActionEnum
+        .describe(
+          'Preferred RSVP indicator. Set to "accept", "decline", or "tentative" to respond without modifying attendees.'
+        )
+        .optional();
+      paramSchema['responseStatus'] = responseStatusEnum
+        .describe('Alternative RSVP indicator using Graph status values (accepted / declined / tentativelyAccepted).')
+        .optional();
+      paramSchema['sendResponse'] = z
+        .boolean()
+        .describe('Optional SendResponse flag for RSVP endpoints (maps to Graph SendResponse).')
+        .optional();
+      paramSchema['comment'] = z
+        .string()
+        .describe('Optional comment/notes to include in the RSVP response (maps to Graph Comment).')
+        .optional();
+      paramSchema['body'] = z
+        .object({
+          responseAction: responseActionEnum.optional(),
+          responseStatus: responseStatusEnum.optional(),
+          SendResponse: z.boolean().optional(),
+          sendResponse: z.boolean().optional(),
+          Comment: z.string().optional(),
+          comment: z.string().optional(),
+        })
+        .passthrough()
+        .describe(
+          'Event patch object. For RSVP, set responseAction/responseStatus (preferred) and optional SendResponse/Comment. Do NOT include attendees to respond—the server automatically responds as the authenticated mailbox. Other Event fields may be patched as usual.'
+        )
         .optional();
     }
 
@@ -427,7 +593,9 @@ export function registerGraphTools(
           const parameterDefinitions = tool.parameters || [];
 
           let path = tool.path;
+          
           const queryParams: Record<string, string> = {};
+          const resolvedPathParams: Record<string, string> = {};
           const headers: Record<string, string> = {};
           let body: unknown = null;
 
@@ -444,6 +612,11 @@ export function registerGraphTools(
 
             // Skip excludeResponse control parameter - it's not part of the Microsoft Graph API
             if (paramName === 'excludeResponse') {
+              continue;
+            }
+
+            // Skip response parameter - it's used to route to correct endpoint, not sent to API
+            if (paramName === 'response' || paramName === 'tentative') {
               continue;
             }
 
@@ -492,6 +665,14 @@ export function registerGraphTools(
                     path = path
                       .replace(`{${paramName}}`, encodeURIComponent(paramValue as string))
                       .replace(`:${paramName}`, encodeURIComponent(paramValue as string));
+                  }
+                  if (typeof paramValue === 'string' && paramValue.trim().length > 0) {
+                    const lowered = paramName.toLowerCase();
+                    if (lowered === 'messageid' || lowered === 'message-id') {
+                      resolvedPathParams.messageId = paramValue;
+                    } else if (lowered === 'userid' || lowered === 'user-id') {
+                      resolvedPathParams.userId = paramValue;
+                    }
                   }
                   break;
 
@@ -577,6 +758,40 @@ export function registerGraphTools(
             }
           }
 
+          const mailboxKeyForRequest = resolveMailboxKey(impersonated, params, path, resolvedPathParams);
+
+          if (tool.alias === 'create-draft-email' && params.body && typeof params.body === 'object') {
+            const draftBody = params.body as Record<string, unknown>;
+            if (Array.isArray(draftBody.attachments) && draftBody.attachments.length > 0) {
+              logger.warn(
+                `[create-draft-email] Inline attachments detected; Graph requires add-mail-attachment after draft creation`
+              );
+              draftBody._attachmentsInlineWarning =
+                'Attachments passed inline to create-draft-email are not supported. Create the draft without attachments, then call add-mail-attachment with the draft\'s messageIdToUse.';
+            }
+          }
+
+          if (tool.alias === 'add-mail-attachment' && params.body && typeof params.body === 'object') {
+            const attachmentBody = params.body as Record<string, unknown>;
+            const contentBytes =
+              typeof attachmentBody.contentBytes === 'string'
+                ? attachmentBody.contentBytes
+                : typeof (attachmentBody as any).ContentBytes === 'string'
+                ? ((attachmentBody as any).ContentBytes as string)
+                : undefined;
+
+            if (!contentBytes || contentBytes.trim().length === 0) {
+              throw new Error(
+                'add-mail-attachment requires a file payload with a base64-encoded "contentBytes" string. Example: { "@odata.type": "#microsoft.graph.fileAttachment", "name": "file.png", "contentType": "image/png", "contentBytes": "iVBORw0..." }.'
+              );
+            }
+
+            if (!attachmentBody['@odata.type']) {
+              attachmentBody['@odata.type'] = '#microsoft.graph.fileAttachment';
+              logger.info(`[add-mail-attachment] Defaulted @odata.type to #microsoft.graph.fileAttachment`);
+            }
+          }
+
           const options: {
             method: string;
             headers: Record<string, string>;
@@ -617,8 +832,219 @@ export function registerGraphTools(
             options.excludeResponse = true;
           }
 
+          // Auto-route: If update-calendar-event is used for RSVP, automatically route to respond endpoint
+          // MUST happen BEFORE the request is made
+          // Store eventId used for RSVP so we can verify it later
+          let rsvpEventId: string | null = null;
+          
+          const isRsvpCapableTool = rsvpEnabledAliases.has(tool.alias);
+
+          if (isRsvpCapableTool) {
+            const rawBody =
+              params.body && typeof params.body === 'object' ? ({ ...(params.body as any) } as Record<string, any>) : {};
+            const body = rawBody;
+
+            if (params.sendResponse !== undefined && body.SendResponse === undefined && body.sendResponse === undefined) {
+              body.SendResponse = params.sendResponse;
+            }
+            if (params.comment !== undefined && body.Comment === undefined && body.comment === undefined) {
+              body.Comment = params.comment;
+            }
+            if (body.sendResponse !== undefined && body.SendResponse === undefined) {
+              body.SendResponse = body.sendResponse;
+              delete body.sendResponse;
+            }
+            if (body.comment !== undefined && body.Comment === undefined) {
+              body.Comment = body.comment;
+              delete body.comment;
+            }
+            const userEmailForRSVP = impersonated?.toLowerCase() || '';
+
+            const mapResponseAction = (value: unknown): 'accept' | 'tentative' | 'decline' | null => {
+              if (value === undefined || value === null) return null;
+              const normalized = String(value).trim().toLowerCase();
+              if (!normalized) return null;
+              if (['accept', 'accepted', 'acceptance', 'yes', 'confirm', 'confirmed'].includes(normalized)) {
+                return 'accept';
+              }
+              if (['decline', 'declined', 'reject', 'rejected', 'no'].includes(normalized)) {
+                return 'decline';
+              }
+              if (
+                [
+                  'tentative',
+                  'tentativelyaccepted',
+                  'tentatively accepted',
+                  'maybe',
+                  'tentativeaccept',
+                  'tentative acceptance',
+                ].includes(normalized)
+              ) {
+                return 'tentative';
+              }
+              return null;
+            };
+
+            const mapGraphStatusToAction = (status: unknown): 'accept' | 'tentative' | 'decline' | null => {
+              const normalized = typeof status === 'string' ? status : undefined;
+              if (!normalized) return null;
+              if (normalized === 'accepted') return 'accept';
+              if (normalized === 'tentativelyAccepted') return 'tentative';
+              if (normalized === 'declined') return 'decline';
+              return null;
+            };
+
+            let responseAction: 'accept' | 'tentative' | 'decline' | null = null;
+            let responseSource: string | null = null;
+
+            const trySetResponseAction = (value: unknown, source: string) => {
+              if (responseAction !== null) return;
+              const mapped = mapResponseAction(value);
+              if (mapped) {
+                responseAction = mapped;
+                responseSource = source;
+              }
+            };
+
+            trySetResponseAction(body.responseAction, 'body.responseAction');
+            trySetResponseAction(body.responseStatus, 'body.responseStatus');
+            trySetResponseAction(body.response, 'body.response');
+            trySetResponseAction(body.rsvp, 'body.rsvp');
+            trySetResponseAction(body.intent, 'body.intent');
+            trySetResponseAction(params.responseAction, 'params.responseAction');
+            trySetResponseAction(params.responseStatus, 'params.responseStatus');
+            trySetResponseAction(params.response, 'params.response');
+            trySetResponseAction((params as any)['response-action'], "params['response-action']");
+
+            // Fallback: look at attendees only if no explicit response field was provided
+            if (responseAction === null && body.attendees && Array.isArray(body.attendees)) {
+              const userAttendee = body.attendees.find((a: any) => {
+                const email = a.emailAddress?.address?.toLowerCase() || '';
+                return email === userEmailForRSVP || email.includes(userEmailForRSVP.split('@')[0]);
+              });
+
+              if (userAttendee && userAttendee.status?.response) {
+                const mapped = mapGraphStatusToAction(userAttendee.status.response);
+                if (mapped) {
+                  responseAction = mapped;
+                  responseSource = 'body.attendees';
+                }
+              }
+            }
+
+            if (!responseAction) {
+              logger.debug(
+                `[update-calendar-event] No RSVP markers detected; proceeding with regular PATCH operation`
+              );
+            } else {
+              logger.info(
+                `[update-calendar-event] Detected RSVP intent (${responseAction}) from ${responseSource || 'unknown source'}`
+              );
+
+              // Extract eventId from params ONLY (path still has {event-id} placeholder at this point)
+              const eventId = params.eventId || params['event-id'] || params['eventId'];
+
+              logger.info(
+                `[update-calendar-event] EventId extraction: params.eventId=${params.eventId || 'none'}, params['event-id']=${params['event-id'] || 'none'}, final=${eventId || 'NONE!'}`
+              );
+
+              if (!eventId) {
+                logger.error(
+                  `[update-calendar-event] CRITICAL: Could not extract eventId from params! Available params: ${JSON.stringify(
+                    Object.keys(params)
+                  )}, path=${path}`
+                );
+              }
+
+              rsvpEventId = eventId || rsvpEventId;
+
+              if (eventId) {
+                const normalizedUser = userEmailForRSVP || impersonated?.toLowerCase() || '';
+                const knownIds = normalizedUser ? recentEventCache.get(normalizedUser) : undefined;
+                if (!knownIds || !knownIds.has(eventId)) {
+                  throw new Error(
+                    `EventId ${eventId.substring(
+                      0,
+                      50
+                    )}... not found in recent list/get results. Always copy the helper field "eventIdToUse" (or "_useThisEventIdForUpdates") from the event you intend to modify.`
+                  );
+                }
+
+                logger.info(
+                  `[update-calendar-event] RSVP routing: eventId=${eventId.substring(
+                    0,
+                    50
+                  )}..., action=${responseAction}, user=${userEmailForRSVP}`
+                );
+
+                // Check status BEFORE the call to verify it actually changes
+                let statusBefore: string | null = null;
+                try {
+                  const checkPath = `/me/events/${encodeURIComponent(eventId)}`;
+                  const checkResponse = await graphClient.graphRequest(checkPath, { method: 'GET' });
+                  if (checkResponse.content && checkResponse.content.length > 0) {
+                    const checkData = JSON.parse(checkResponse.content[0].text);
+                    if (checkData.attendees && Array.isArray(checkData.attendees)) {
+                      const checkAttendee = checkData.attendees.find((a: any) => {
+                        const email = a.emailAddress?.address?.toLowerCase() || '';
+                        return email === userEmailForRSVP;
+                      });
+                      if (checkAttendee) {
+                        statusBefore = checkAttendee.status?.response || 'none';
+                        logger.info(`[update-calendar-event] Status BEFORE respond call: ${statusBefore}`);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  logger.warn(`[update-calendar-event] Could not check status before call: ${e}`);
+                }
+
+                if (responseAction === 'tentative') {
+                  path = `/me/events/${encodeURIComponent(eventId)}/tentativelyAccept`;
+                } else if (responseAction === 'decline') {
+                  path = `/me/events/${encodeURIComponent(eventId)}/decline`;
+                } else {
+                  path = `/me/events/${encodeURIComponent(eventId)}/accept`;
+                }
+
+                logger.info(`[update-calendar-event] RSVP call: path=${path}, method=POST`);
+
+                // Change method to POST (respond endpoints are POST, not PATCH)
+                options.method = 'POST';
+
+                // Remove helper fields before sending body to Graph
+                const {
+                  attendees,
+                  responseAction: _responseActionField,
+                  responseStatus: _responseStatusField,
+                  response: _responseField,
+                  rsvp: _rsvpField,
+                  intent: _intentField,
+                  ...restBody
+                } = body;
+
+                if (Object.keys(restBody).length > 0) {
+                  options.body = typeof restBody === 'string' ? restBody : JSON.stringify(restBody);
+                  logger.info(
+                    `[update-calendar-event] Keeping body fields for RSVP call: ${Object.keys(restBody).join(', ')}`
+                  );
+                } else {
+                  options.body = '{}';
+                  logger.info(`[update-calendar-event] Sending empty body for RSVP`);
+                }
+
+                logger.info(`[update-calendar-event] Routed to ${path} (POST) for RSVP response`);
+              }
+            }
+          }
+
           logger.info(`Making graph request to ${path} with options: ${JSON.stringify(options)}`);
           let response = await graphClient.graphRequest(path, options);
+          
+          // Log response status for RSVP calls
+          if (isRsvpCapableTool && (path.includes('/accept') || path.includes('/decline') || path.includes('/tentativelyAccept'))) {
+            logger.info(`[update-calendar-event] RSVP call response: path=${path}, responseSize=${response.content?.length || 0}, isError=${response.isError || false}`);
+          }
 
           const fetchAllPages = params.fetchAllPages === true;
           if (fetchAllPages && response && response.content && response.content.length > 0) {
@@ -687,6 +1113,136 @@ export function registerGraphTools(
             try {
               const jsonResponse = JSON.parse(responseText);
               
+              // Special handling for update-calendar-event when it was routed to a respond endpoint
+              const isRespondEndpoint = isRsvpCapableTool && 
+                                       (path.includes('/accept') || path.includes('/decline') || path.includes('/tentativelyAccept'));
+              
+              // Accept/decline endpoints return 204 No Content, which becomes an empty response or {success: true}
+              const isEmptyResponse = !responseText || responseText.trim() === '' || responseText === '{}' || 
+                                     (jsonResponse && (jsonResponse.success === true || jsonResponse.message === 'OK!'));
+              
+              if (isRespondEndpoint && isEmptyResponse) {
+                logger.info(`[update-calendar-event] RSVP endpoint called successfully (empty/204 response expected)`);
+                // Determine response type from path
+                let response: 'accept' | 'tentative' | 'decline' = 'accept';
+                if (path.includes('/tentativelyAccept')) {
+                  response = 'tentative';
+                } else if (path.includes('/decline')) {
+                  response = 'decline';
+                } else {
+                  response = 'accept';
+                }
+                
+                // Verify the acceptance actually worked by fetching the event
+                // Use the stored eventId from routing (should always be set if routing happened)
+                const eventId = rsvpEventId || (params.eventId || params['event-id'] || 'unknown') as string;
+                
+                if (!rsvpEventId) {
+                  logger.warn(`[update-calendar-event] WARNING: No stored eventId for verification! Using fallback: ${eventId.substring(0, 50)}...`);
+                }
+                
+                logger.info(`[update-calendar-event] Verifying RSVP for eventId: ${eventId.substring(0, 50)}... (stored: ${rsvpEventId ? 'yes' : 'no'})`);
+                try {
+                  // Wait a brief moment for the API to process the change
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  
+                  const verifyPath = `/me/events/${encodeURIComponent(eventId)}`;
+                  logger.info(`[update-calendar-event] Fetching event to verify: ${verifyPath}`);
+                  const verifyResponse = await graphClient.graphRequest(verifyPath, { method: 'GET' });
+                  if (verifyResponse.content && verifyResponse.content.length > 0) {
+                    const eventData = JSON.parse(verifyResponse.content[0].text);
+                    // Use the impersonated user already determined in the handler
+                    // (from header, context, or env var - in that priority order)
+                    const verifyUserEmail = impersonated?.toLowerCase() || '';
+                    const eventSubject = eventData.subject || 'NO SUBJECT';
+                    logger.info(`[update-calendar-event] Verifying event: subject="${eventSubject}", eventId=${eventId.substring(0, 50)}..., user=${verifyUserEmail}, attendees=${eventData.attendees?.length || 0}`);
+                    
+                    if (eventData.attendees && Array.isArray(eventData.attendees)) {
+                      // Log all attendees for debugging
+                      logger.info(`[update-calendar-event] Event attendees: ${JSON.stringify(eventData.attendees.map((a: any) => ({ 
+                        email: a.emailAddress?.address, 
+                        status: a.status?.response,
+                        type: a.type 
+                      })))}`);
+                      
+                      // Find the exact matching attendee - be precise with email matching
+                      const userAttendee = eventData.attendees.find((a: any) => {
+                        const email = a.emailAddress?.address?.toLowerCase() || '';
+                        // Exact match only - don't use loose matching
+                        return email === verifyUserEmail;
+                      });
+                      
+                      if (userAttendee) {
+                        const actualStatus = userAttendee.status?.response || 'none';
+                        const expectedStatus = response === 'accept' ? 'accepted' :
+                                             response === 'tentative' ? 'tentativelyAccepted' :
+                                             'declined';
+                        
+                        logger.info(`[update-calendar-event] Verification: checking attendee ${userAttendee.emailAddress?.address}, expected ${expectedStatus}, actual ${actualStatus}`);
+                        
+                        if (actualStatus === expectedStatus) {
+                          const action = response === 'accept' ? 'accepted' :
+                                        response === 'tentative' ? 'tentatively accepted' :
+                                        'declined';
+                          jsonResponse.success = true;
+                          jsonResponse.action = action;
+                          jsonResponse.message = `Meeting invitation ${action} successfully`;
+                          jsonResponse._verified = true;
+                          logger.info(`✓ Calendar event ${action} verified: eventId ${eventId.substring(0, 50)}...`);
+                        } else {
+                          jsonResponse.success = false;
+                          jsonResponse._acceptFailed = true;
+                          jsonResponse._error = `Accept operation returned 204 success but event was not actually ${response === 'accept' ? 'accepted' : response === 'tentative' ? 'tentatively accepted' : 'declined'}. Current status: ${actualStatus}, Expected: ${expectedStatus}`;
+                          jsonResponse.message = `⚠️ Accept operation may have failed. Expected status: ${expectedStatus}, Actual status: ${actualStatus}`;
+                          logger.error(`⚠️ Calendar event accept verification failed: expected ${expectedStatus}, got ${actualStatus} for eventId ${eventId.substring(0, 50)}...`);
+                          logger.error(`⚠️ Event attendees: ${JSON.stringify(eventData.attendees.map((a: any) => ({ email: a.emailAddress?.address, status: a.status?.response })))}`);
+                        }
+                      } else {
+                        logger.warn(`Could not find user attendee (${verifyUserEmail}) in event for verification. Event attendees: ${eventData.attendees.map((a: any) => a.emailAddress?.address).join(', ')}`);
+                        // Still mark as success but note verification couldn't be done
+                        const action = response === 'accept' ? 'accepted' :
+                                      response === 'tentative' ? 'tentatively accepted' :
+                                      'declined';
+                        jsonResponse.success = true;
+                        jsonResponse.action = action;
+                        jsonResponse.message = `Meeting invitation ${action} successfully (verification incomplete - user not found in attendees)`;
+                        jsonResponse._verificationIncomplete = true;
+                        jsonResponse._warning = `Could not verify: user ${verifyUserEmail} not found in event attendees`;
+                      }
+                    } else {
+                      logger.warn(`Event has no attendees array for verification`);
+                      const action = response === 'accept' ? 'accepted' :
+                                    response === 'tentative' ? 'tentatively accepted' :
+                                    'declined';
+                      jsonResponse.success = true;
+                      jsonResponse.action = action;
+                      jsonResponse.message = `Meeting invitation ${action} successfully (verification incomplete - no attendees)`;
+                      jsonResponse._verificationIncomplete = true;
+                    }
+                  } else {
+                    logger.warn(`Could not parse verification response`);
+                    const action = response === 'accept' ? 'accepted' :
+                                  response === 'tentative' ? 'tentatively accepted' :
+                                  'declined';
+                    jsonResponse.success = true;
+                    jsonResponse.action = action;
+                    jsonResponse.message = `Meeting invitation ${action} successfully (verification incomplete)`;
+                    jsonResponse._verificationIncomplete = true;
+                  }
+                } catch (verifyError) {
+                  logger.error(`Could not verify calendar event acceptance: ${verifyError}`);
+                  // Still mark as success but note verification failed
+                  const action = response === 'accept' ? 'accepted' :
+                                response === 'tentative' ? 'tentatively accepted' :
+                                'declined';
+                  jsonResponse.success = true;
+                  jsonResponse.action = action;
+                  jsonResponse.message = `Meeting invitation ${action} successfully (verification failed: ${verifyError})`;
+                  jsonResponse._verificationFailed = true;
+                  jsonResponse._verificationError = String(verifyError);
+                }
+              }
+              
               // Special handling for list-mail-folders: add helper field to make correct ID explicit
               if (tool.alias === 'list-mail-folders' && jsonResponse.value && Array.isArray(jsonResponse.value)) {
                 for (const folder of jsonResponse.value) {
@@ -695,6 +1251,122 @@ export function registerGraphTools(
                     folder.folderIdToUse = folder.id;
                     folder._useThisIdForFolderQueries = folder.id;
                   }
+                }
+              }
+              
+              // Special handling for list-calendar-events and get-calendar-event: add clear response status
+              if (
+                (tool.alias === 'list-calendar-events' || tool.alias === 'get-calendar-event') &&
+                jsonResponse &&
+                typeof jsonResponse === 'object'
+              ) {
+                const events = tool.alias === 'list-calendar-events' 
+                  ? (jsonResponse.value || [])
+                  : [jsonResponse];
+                const cachedEventIds: string[] = [];
+                
+                for (const event of events) {
+                  if (event && typeof event === 'object' && event.attendees && Array.isArray(event.attendees)) {
+                    // Find the authenticated user's attendee entry
+                    // Use the impersonated user already determined in the handler
+                    // (from header, context, or env var - in that priority order)
+                    const eventUserEmail = impersonated?.toLowerCase() || '';
+                    
+                    const userAttendee = event.attendees.find((a: any) => {
+                      const email = a.emailAddress?.address?.toLowerCase() || '';
+                      // Use exact match for consistency
+                      return email === eventUserEmail;
+                    });
+                    
+                    if (event.id && typeof event.id === 'string') {
+                      cachedEventIds.push(event.id);
+                    }
+
+                    if (userAttendee) {
+                      const responseStatus = userAttendee.status?.response || 'none';
+                      event.eventIdToUse = event.id;
+                      event._useThisEventIdForUpdates = event.id;
+                      event._calendarIdUsed = event.calendarId || null;
+
+                      if (responseStatus === 'none' || responseStatus === null || responseStatus === undefined) {
+                        event._responseStatus = 'notAccepted';
+                        event._responseStatusMessage =
+                          '⚠️ This meeting invitation has NOT been accepted yet. Call update-calendar-event with body.responseAction set to "accept" (or body.responseStatus="accepted"). Do NOT include attendee lists or ask which attendee to use—the MCP server already responds as the authenticated mailbox.';
+                      } else if (responseStatus === 'tentativelyAccepted') {
+                        event._responseStatus = 'tentative';
+                        event._responseStatusMessage =
+                          'This meeting is tentatively accepted (maybe). Call update-calendar-event with body.responseAction="accept" (or body.responseStatus="accepted") to fully accept. Do NOT prompt the user for attendee details.';
+                      } else if (responseStatus === 'accepted') {
+                        event._responseStatus = 'accepted';
+                        event._responseStatusMessage = 'This meeting has been accepted.';
+                      } else if (responseStatus === 'declined') {
+                        event._responseStatus = 'declined';
+                        event._responseStatusMessage = 'This meeting has been declined.';
+                      }
+                      // Add explicit note about how to respond
+                      const respondEmail = eventUserEmail || impersonated || '(authenticated user)';
+                      event._respondInstructions =
+                        `To respond: call update-calendar-event with body.responseAction set to "accept", "decline", or "tentative" ` +
+                        `(or use body.responseStatus with Graph values "accepted"/"declined"/"tentativelyAccepted"). ` +
+                        `Do NOT include attendee lists and NEVER ask the human which attendee to use; always respond as ${respondEmail}.`;
+                    } else if (event.organizer?.emailAddress?.address?.toLowerCase() === eventUserEmail) {
+                      // User is the organizer, so no response needed
+                      event._responseStatus = 'organizer';
+                      event._responseStatusMessage = 'You are the organizer of this meeting.';
+                    }
+                  }
+                }
+                rememberEventsForUser(impersonated, cachedEventIds);
+              }
+
+              if (mailListAliases.has(tool.alias) && jsonResponse && Array.isArray(jsonResponse.value)) {
+                jsonResponse.value.forEach((message: any, index: number) => {
+                  annotateMessageObject(message, mailboxKeyForRequest, index + 1);
+                });
+              } else if (mailSingleMessageAliases.has(tool.alias) && jsonResponse && typeof jsonResponse === 'object') {
+                annotateMessageObject(jsonResponse, mailboxKeyForRequest);
+              }
+              
+              // Special handling for create-draft-email: explicitly state that attachments must be added separately
+              if (tool.alias === 'create-draft-email' && jsonResponse && typeof jsonResponse === 'object') {
+                const hasAttachments = Array.isArray(jsonResponse.attachments) && jsonResponse.attachments.length > 0;
+                if (!hasAttachments) {
+                  jsonResponse._noAttachments = true;
+                  jsonResponse._attachmentInstructions = 
+                    'This draft has NO attachments. To attach files, you MUST call add-mail-attachment with the messageIdToUse from this response. ' +
+                    'Do NOT claim attachments were added unless you actually called add-mail-attachment and received a success response.';
+                }
+              }
+              
+              // Special handling for add-mail-attachment: mark success explicitly
+              if (tool.alias === 'add-mail-attachment' && jsonResponse && typeof jsonResponse === 'object') {
+                jsonResponse._attachmentAdded = true;
+                jsonResponse._attachmentSuccessMessage = 
+                  'Attachment successfully added to the draft. You can now call add-mail-attachment again for additional files, or call send-mail to send the draft.';
+              }
+              
+              // Validation for move-mail-message: verify the move actually succeeded
+              if (tool.alias === 'move-mail-message' && jsonResponse && typeof jsonResponse === 'object') {
+                const destinationId = params.body?.DestinationId || params.body?.destinationId;
+                const actualParentFolderId = jsonResponse.parentFolderId;
+                
+                if (destinationId && actualParentFolderId) {
+                  if (destinationId !== actualParentFolderId) {
+                    const errorMsg = `⚠️  MOVE FAILED: Requested destinationId "${destinationId.substring(0, 50)}..." but message is in folder "${actualParentFolderId.substring(0, 50)}...". ` +
+                      `The move operation did not succeed. This usually means the destinationId is invalid (e.g., using parentFolderId instead of folder id). ` +
+                      `Use the folder's "id" field from list-mail-folders, NOT "parentFolderId". ` +
+                      `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID.`;
+                    logger.error(errorMsg);
+                    // Add error indicator to response
+                    jsonResponse._moveFailed = true;
+                    jsonResponse._error = `Move failed: destinationId does not match actual parentFolderId. Requested: ${destinationId.substring(0, 30)}..., Actual: ${actualParentFolderId.substring(0, 30)}...`;
+                    jsonResponse._warning = errorMsg;
+                  } else {
+                    logger.info(`✓ Move successful: message moved to folder ${destinationId.substring(0, 50)}...`);
+                    jsonResponse._moveSucceeded = true;
+                  }
+                } else if (destinationId && !actualParentFolderId) {
+                  logger.warn(`⚠️  Could not verify move: destinationId provided but response missing parentFolderId`);
                 }
               }
               
@@ -985,8 +1657,36 @@ export function registerGraphTools(
         .optional(),
     };
 
+    const ensureSaveToSentItemsDefault = (
+      body: unknown
+    ): { payload: Record<string, unknown>; explicitlyDisabled: boolean } => {
+      if (body && typeof body === 'object') {
+        const cloned = { ...(body as Record<string, unknown>) };
+        const explicitlyDisabled = cloned.SaveToSentItems === false;
+        if (cloned.SaveToSentItems === undefined || cloned.SaveToSentItems === null) {
+          cloned.SaveToSentItems = true;
+        }
+        return { payload: cloned, explicitlyDisabled };
+      }
+      return { payload: { SaveToSentItems: true }, explicitlyDisabled: false };
+    };
+
     registerWrapperTool(base.alias, base.description, schema, base.metadata, async (params) => {
       const { sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      const { payload: body, explicitlyDisabled } = ensureSaveToSentItemsDefault(
+        (rest as Record<string, unknown>).body
+      );
+
+      if (explicitlyDisabled) {
+        logger.warn(
+          '[send-mail] SaveToSentItems=false requested; honoring request but this should be rare.'
+        );
+      }
+
+      const payload = {
+        ...rest,
+        body,
+      };
       const sharedTarget =
         typeof sharedMailboxId === 'string' && sharedMailboxId.trim().length > 0
           ? sharedMailboxId
@@ -995,10 +1695,10 @@ export function registerGraphTools(
           : undefined;
 
       if (sharedTarget) {
-        return invokeInternalTool('send-shared-mailbox-mail', { ...rest, userId: sharedTarget });
+        return invokeInternalTool('send-shared-mailbox-mail', { ...payload, userId: sharedTarget });
       }
 
-      return invokeInternalTool('send-mail', rest);
+      return invokeInternalTool('send-mail', payload);
     });
   };
 

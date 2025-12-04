@@ -89,6 +89,7 @@ vi.mock('../src/logger.js', () => {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
+      debug: vi.fn(),
     },
   };
 });
