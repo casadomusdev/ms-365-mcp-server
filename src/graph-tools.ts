@@ -1113,6 +1113,30 @@ export function registerGraphTools(
             try {
               const jsonResponse = JSON.parse(responseText);
               
+              // Check for error responses and enhance them with helpful messages
+              if (response.isError || (jsonResponse && typeof jsonResponse === 'object' && jsonResponse.error)) {
+                const errorMessage = typeof jsonResponse.error === 'string' ? jsonResponse.error : JSON.stringify(jsonResponse.error);
+                const is404Error = errorMessage.includes('404') || errorMessage.includes('ErrorItemNotFound') || errorMessage.includes('not found');
+                
+                // Enhance 404 errors for folder-related operations
+                if (is404Error && (tool.alias === 'list-mail-folder-messages' || path.includes('/mailFolders/'))) {
+                  const folderId = params.mailFolderId || params.folderId || resolvedPathParams.mailFolderId;
+                  if (folderId) {
+                    const enhancedError = `⚠️  FOLDER NOT FOUND: The folder ID "${folderId.substring(0, 50)}..." is invalid or doesn't exist. ` +
+                      `This usually means: (1) The folder ID is incorrect (e.g., using parentFolderId instead of folder id), ` +
+                      `(2) The folder was deleted, or (3) Case-sensitive folder name mismatch when looking up the folder. ` +
+                      `SOLUTION: Call list-mail-folders with $select=id,displayName to get the correct folder ID. ` +
+                      `Use the folder's "id" field (NOT parentFolderId). ` +
+                      `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID.`;
+                    logger.error(enhancedError);
+                    jsonResponse._folderNotFound = true;
+                    jsonResponse._error = enhancedError;
+                    jsonResponse._warning = enhancedError;
+                    jsonResponse._invalidFolderId = true;
+                  }
+                }
+              }
+              
               // Special handling for update-calendar-event when it was routed to a respond endpoint
               const isRespondEndpoint = isRsvpCapableTool && 
                                        (path.includes('/accept') || path.includes('/decline') || path.includes('/tentativelyAccept'));
@@ -1347,26 +1371,82 @@ export function registerGraphTools(
               
               // Validation for move-mail-message: verify the move actually succeeded
               if (tool.alias === 'move-mail-message' && jsonResponse && typeof jsonResponse === 'object') {
-                const destinationId = params.body?.DestinationId || params.body?.destinationId;
-                const actualParentFolderId = jsonResponse.parentFolderId;
+                // Check if this is an error response first
+                const isErrorResponse = jsonResponse.error || response.isError;
                 
-                if (destinationId && actualParentFolderId) {
-                  if (destinationId !== actualParentFolderId) {
-                    const errorMsg = `⚠️  MOVE FAILED: Requested destinationId "${destinationId.substring(0, 50)}..." but message is in folder "${actualParentFolderId.substring(0, 50)}...". ` +
-                      `The move operation did not succeed. This usually means the destinationId is invalid (e.g., using parentFolderId instead of folder id). ` +
-                      `Use the folder's "id" field from list-mail-folders, NOT "parentFolderId". ` +
-                      `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID.`;
-                    logger.error(errorMsg);
-                    // Add error indicator to response
-                    jsonResponse._moveFailed = true;
-                    jsonResponse._error = `Move failed: destinationId does not match actual parentFolderId. Requested: ${destinationId.substring(0, 30)}..., Actual: ${actualParentFolderId.substring(0, 30)}...`;
-                    jsonResponse._warning = errorMsg;
-                  } else {
-                    logger.info(`✓ Move successful: message moved to folder ${destinationId.substring(0, 50)}...`);
-                    jsonResponse._moveSucceeded = true;
+                if (isErrorResponse) {
+                  // Extract destinationId for error reporting
+                  let destinationId: string | undefined;
+                  try {
+                    if (options.body && typeof options.body === 'string') {
+                      const sentBody = JSON.parse(options.body);
+                      destinationId = sentBody.DestinationId || sentBody.destinationId;
+                    }
+                  } catch (e) {
+                    // If parsing fails, fall back to params.body
                   }
-                } else if (destinationId && !actualParentFolderId) {
-                  logger.warn(`⚠️  Could not verify move: destinationId provided but response missing parentFolderId`);
+                  if (!destinationId) {
+                    destinationId = params.body?.DestinationId || params.body?.destinationId;
+                  }
+                  
+                  const errorMessage = typeof jsonResponse.error === 'string' ? jsonResponse.error : JSON.stringify(jsonResponse.error);
+                  const is404Error = errorMessage.includes('404') || errorMessage.includes('ErrorItemNotFound') || errorMessage.includes('not found');
+                  
+                  if (is404Error && destinationId) {
+                    const enhancedError = `⚠️  MOVE FAILED: The destination folder ID "${destinationId.substring(0, 50)}..." is invalid or not found. ` +
+                      `This usually means: (1) The folder ID is incorrect (e.g., using parentFolderId instead of folder id), ` +
+                      `(2) The folder doesn't exist, or (3) Case-sensitive folder name mismatch (e.g., "Wichtig" vs "wichtig"). ` +
+                      `SOLUTION: Call list-mail-folders with $select=id,displayName and find the exact folder by displayName (case-sensitive). ` +
+                      `Use the folder's "id" field (NOT parentFolderId) as destinationId. ` +
+                      `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID.`;
+                    logger.error(enhancedError);
+                    jsonResponse._moveFailed = true;
+                    jsonResponse._error = enhancedError;
+                    jsonResponse._warning = enhancedError;
+                    jsonResponse._invalidFolderId = true;
+                  } else {
+                    // Other error types
+                    jsonResponse._moveFailed = true;
+                    jsonResponse._error = errorMessage;
+                  }
+                } else {
+                  // Success response - validate the move
+                  // Read destinationId from the actual body that was sent to the API
+                  // Try to parse from options.body (the actual sent body) first, fallback to params.body
+                  let destinationId: string | undefined;
+                  try {
+                    if (options.body && typeof options.body === 'string') {
+                      const sentBody = JSON.parse(options.body);
+                      destinationId = sentBody.DestinationId || sentBody.destinationId;
+                    }
+                  } catch (e) {
+                    // If parsing fails, fall back to params.body
+                  }
+                  // Fallback to params.body if not found in sent body
+                  if (!destinationId) {
+                    destinationId = params.body?.DestinationId || params.body?.destinationId;
+                  }
+                  
+                  const actualParentFolderId = jsonResponse.parentFolderId;
+                  
+                  if (destinationId && actualParentFolderId) {
+                    if (destinationId !== actualParentFolderId) {
+                      const errorMsg = `⚠️  MOVE FAILED: Requested destinationId "${destinationId.substring(0, 50)}..." but message is in folder "${actualParentFolderId.substring(0, 50)}...". ` +
+                        `The move operation did not succeed. This usually means the destinationId is invalid (e.g., using parentFolderId instead of folder id). ` +
+                        `Use the folder's "id" field from list-mail-folders (NOT "parentFolderId"). ` +
+                        `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID.`;
+                      logger.error(errorMsg);
+                      // Add error indicator to response
+                      jsonResponse._moveFailed = true;
+                      jsonResponse._error = `Move failed: destinationId does not match actual parentFolderId. Requested: ${destinationId.substring(0, 30)}..., Actual: ${actualParentFolderId.substring(0, 30)}...`;
+                      jsonResponse._warning = errorMsg;
+                    } else {
+                      logger.info(`✓ Move successful: message moved to folder ${destinationId.substring(0, 50)}...`);
+                      jsonResponse._moveSucceeded = true;
+                    }
+                  } else if (destinationId && !actualParentFolderId) {
+                    logger.warn(`⚠️  Could not verify move: destinationId provided but response missing parentFolderId`);
+                  }
                 }
               }
               
