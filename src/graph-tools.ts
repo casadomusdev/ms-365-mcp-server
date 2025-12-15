@@ -984,6 +984,12 @@ export function registerGraphTools(
                   const checkResponse = await graphClient.graphRequest(checkPath, { method: 'GET' });
                   if (checkResponse.content && checkResponse.content.length > 0) {
                     const checkData = JSON.parse(checkResponse.content[0].text);
+                    
+                    // Log organizer info for debugging (but don't block - let API decide)
+                    const organizerEmail = checkData.organizer?.emailAddress?.address || '';
+                    const userEmailLower = userEmailForRSVP?.toLowerCase() || '';
+                    logger.info(`[update-calendar-event] Event organizer: ${organizerEmail}, User: ${userEmailLower}, isOrganizer: ${checkData.isOrganizer}`);
+                    
                     if (checkData.attendees && Array.isArray(checkData.attendees)) {
                       const checkAttendee = checkData.attendees.find((a: any) => {
                         const email = a.emailAddress?.address?.toLowerCase() || '';
@@ -1117,6 +1123,44 @@ export function registerGraphTools(
               if (response.isError || (jsonResponse && typeof jsonResponse === 'object' && jsonResponse.error)) {
                 const errorMessage = typeof jsonResponse.error === 'string' ? jsonResponse.error : JSON.stringify(jsonResponse.error);
                 const is404Error = errorMessage.includes('404') || errorMessage.includes('ErrorItemNotFound') || errorMessage.includes('not found');
+                const isOrganizerError = errorMessage.includes('organizer') || errorMessage.includes('meeting organizer') || 
+                                       (jsonResponse.error && typeof jsonResponse.error === 'object' && 
+                                        (jsonResponse.error.message?.toLowerCase().includes('organizer') || 
+                                         jsonResponse.error.code === 'ErrorInvalidRequest'));
+                
+                // Enhance organizer errors for RSVP operations
+                if (isOrganizerError && isRsvpCapableTool && 
+                    (path.includes('/accept') || path.includes('/decline') || path.includes('/tentativelyAccept'))) {
+                  // Extract organizer info from error or try to get it from the event
+                  let organizerInfo = '';
+                  try {
+                    const errorDetail = jsonResponse.error && typeof jsonResponse.error === 'object' ? jsonResponse.error : {};
+                    const eventIdMatch = path.match(/\/events\/([^\/]+)/);
+                    if (eventIdMatch) {
+                      const eventId = decodeURIComponent(eventIdMatch[1]);
+                      logger.info(`[update-calendar-event] Attempting to fetch event ${eventId.substring(0, 50)}... to check organizer`);
+                      // Note: We could fetch the event here, but that would be another API call
+                      // Instead, suggest the user check the event details
+                    }
+                  } catch (e) {
+                    logger.warn(`[update-calendar-event] Could not extract organizer info: ${e}`);
+                  }
+                  
+                  const currentUserEmail = impersonated || 'current user';
+                  const enhancedError = `⚠️  CANNOT RSVP: Microsoft Graph API reports you cannot respond to this meeting because you're the organizer. ` +
+                    `However, if you believe you are NOT the organizer, this may be an API issue. ` +
+                    `To verify: Call get-calendar-event with the eventId and check the "organizer.emailAddress.address" field. ` +
+                    `The actual organizer should be listed there. If the organizer email doesn't match your email (${currentUserEmail}), ` +
+                    `this may be a Microsoft Graph API limitation or impersonation issue. ` +
+                    `Organizers cannot accept/decline their own meetings—they are already considered accepted. ` +
+                    `If you need to cancel the meeting, use delete-calendar-event instead.`;
+                  logger.error(enhancedError);
+                  jsonResponse._organizerError = true;
+                  jsonResponse._error = enhancedError;
+                  jsonResponse._warning = enhancedError;
+                  jsonResponse._cannotRSVP = true;
+                  jsonResponse._suggestedCheck = 'Call get-calendar-event to verify the organizer.emailAddress.address field';
+                }
                 
                 // Enhance 404 errors for folder-related operations
                 if (is404Error && (tool.alias === 'list-mail-folder-messages' || path.includes('/mailFolders/'))) {
@@ -1167,19 +1211,58 @@ export function registerGraphTools(
                 
                 logger.info(`[update-calendar-event] Verifying RSVP for eventId: ${eventId.substring(0, 50)}... (stored: ${rsvpEventId ? 'yes' : 'no'})`);
                 try {
-                  // Wait a brief moment for the API to process the change
-                  await new Promise(resolve => setTimeout(resolve, 500));
+                  // Wait longer for the API to process the change - RSVP endpoints can take time to propagate
+                  // Try multiple times with increasing delays to account for sync delays
+                  let verificationAttempts = 0;
+                  const maxAttempts = 3;
+                  let eventData: any = null;
+                  let verifyResponse: any = null;
                   
-                  const verifyPath = `/me/events/${encodeURIComponent(eventId)}`;
-                  logger.info(`[update-calendar-event] Fetching event to verify: ${verifyPath}`);
-                  const verifyResponse = await graphClient.graphRequest(verifyPath, { method: 'GET' });
-                  if (verifyResponse.content && verifyResponse.content.length > 0) {
-                    const eventData = JSON.parse(verifyResponse.content[0].text);
+                  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    const delayMs = attempt * 1000; // 1s, 2s, 3s
+                    logger.info(`[update-calendar-event] Verification attempt ${attempt}/${maxAttempts}, waiting ${delayMs}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                    
+                    const verifyPath = `/me/events/${encodeURIComponent(eventId)}`;
+                    logger.info(`[update-calendar-event] Fetching event to verify (attempt ${attempt}): ${verifyPath}`);
+                    verifyResponse = await graphClient.graphRequest(verifyPath, { method: 'GET' });
+                    
+                    if (verifyResponse.content && verifyResponse.content.length > 0) {
+                      eventData = JSON.parse(verifyResponse.content[0].text);
+                      const verifyUserEmail = impersonated?.toLowerCase() || '';
+                      const userAttendee = eventData.attendees?.find((a: any) => {
+                        const email = a.emailAddress?.address?.toLowerCase() || '';
+                        return email === verifyUserEmail;
+                      });
+                      
+                      if (userAttendee) {
+                        const actualStatus = userAttendee.status?.response || 'none';
+                        const expectedStatus = response === 'accept' ? 'accepted' :
+                                             response === 'tentative' ? 'tentativelyAccepted' :
+                                             'declined';
+                        
+                        logger.info(`[update-calendar-event] Attempt ${attempt}: User ${verifyUserEmail} status is ${actualStatus}, expected ${expectedStatus}`);
+                        
+                        if (actualStatus === expectedStatus) {
+                          logger.info(`[update-calendar-event] Verification successful on attempt ${attempt}`);
+                          break; // Success, exit loop
+                        } else if (attempt < maxAttempts) {
+                          logger.info(`[update-calendar-event] Status mismatch on attempt ${attempt}, will retry...`);
+                        }
+                      }
+                    }
+                  }
+                  
+                  if (!eventData && verifyResponse && verifyResponse.content && verifyResponse.content.length > 0) {
+                    eventData = JSON.parse(verifyResponse.content[0].text);
+                  }
+                  
+                  if (eventData) {
                     // Use the impersonated user already determined in the handler
                     // (from header, context, or env var - in that priority order)
                     const verifyUserEmail = impersonated?.toLowerCase() || '';
                     const eventSubject = eventData.subject || 'NO SUBJECT';
-                    logger.info(`[update-calendar-event] Verifying event: subject="${eventSubject}", eventId=${eventId.substring(0, 50)}..., user=${verifyUserEmail}, attendees=${eventData.attendees?.length || 0}`);
+                    logger.info(`[update-calendar-event] Final verification: subject="${eventSubject}", eventId=${eventId.substring(0, 50)}..., user=${verifyUserEmail}, attendees=${eventData.attendees?.length || 0}`);
                     
                     if (eventData.attendees && Array.isArray(eventData.attendees)) {
                       // Log all attendees for debugging
@@ -1196,13 +1279,26 @@ export function registerGraphTools(
                         return email === verifyUserEmail;
                       });
                       
-                      if (userAttendee) {
+                      // Check organizer first - if user is organizer, they can't RSVP
+                      const organizerEmail = eventData.organizer?.emailAddress?.address?.toLowerCase() || '';
+                      const isUserOrganizer = organizerEmail === verifyUserEmail || eventData.isOrganizer === true;
+                      
+                      if (isUserOrganizer) {
+                        jsonResponse.success = false;
+                        jsonResponse._organizerError = true;
+                        jsonResponse._error = `Cannot verify RSVP: You are the organizer of this meeting (${organizerEmail}). Organizers cannot accept/decline their own meetings.`;
+                        jsonResponse.message = `⚠️ Cannot verify RSVP: You are the organizer. Organizers cannot RSVP to their own meetings.`;
+                        logger.warn(`[update-calendar-event] Verification skipped: User ${verifyUserEmail} is the organizer`);
+                      } else if (userAttendee) {
                         const actualStatus = userAttendee.status?.response || 'none';
                         const expectedStatus = response === 'accept' ? 'accepted' :
                                              response === 'tentative' ? 'tentativelyAccepted' :
                                              'declined';
                         
                         logger.info(`[update-calendar-event] Verification: checking attendee ${userAttendee.emailAddress?.address}, expected ${expectedStatus}, actual ${actualStatus}`);
+                        
+                        // Also log organizer info for debugging
+                        logger.info(`[update-calendar-event] Event organizer: ${eventData.organizer?.emailAddress?.address || 'unknown'}, isOrganizer: ${eventData.isOrganizer}`);
                         
                         if (actualStatus === expectedStatus) {
                           const action = response === 'accept' ? 'accepted' :
@@ -1212,17 +1308,33 @@ export function registerGraphTools(
                           jsonResponse.action = action;
                           jsonResponse.message = `Meeting invitation ${action} successfully`;
                           jsonResponse._verified = true;
+                          jsonResponse._organizerEmail = eventData.organizer?.emailAddress?.address || 'unknown';
+                          jsonResponse._yourEmail = verifyUserEmail;
+                          jsonResponse._yourStatus = actualStatus;
+                          // Include all attendee statuses for transparency
+                          jsonResponse._allAttendees = eventData.attendees.map((a: any) => ({
+                            email: a.emailAddress?.address,
+                            status: a.status?.response || 'none',
+                            type: a.type
+                          }));
                           logger.info(`✓ Calendar event ${action} verified: eventId ${eventId.substring(0, 50)}...`);
                         } else {
                           jsonResponse.success = false;
                           jsonResponse._acceptFailed = true;
                           jsonResponse._error = `Accept operation returned 204 success but event was not actually ${response === 'accept' ? 'accepted' : response === 'tentative' ? 'tentatively accepted' : 'declined'}. Current status: ${actualStatus}, Expected: ${expectedStatus}`;
                           jsonResponse.message = `⚠️ Accept operation may have failed. Expected status: ${expectedStatus}, Actual status: ${actualStatus}`;
+                          jsonResponse._organizerEmail = eventData.organizer?.emailAddress?.address || 'unknown';
+                          jsonResponse._yourEmail = verifyUserEmail;
+                          jsonResponse._yourStatus = actualStatus;
                           logger.error(`⚠️ Calendar event accept verification failed: expected ${expectedStatus}, got ${actualStatus} for eventId ${eventId.substring(0, 50)}...`);
                           logger.error(`⚠️ Event attendees: ${JSON.stringify(eventData.attendees.map((a: any) => ({ email: a.emailAddress?.address, status: a.status?.response })))}`);
                         }
                       } else {
                         logger.warn(`Could not find user attendee (${verifyUserEmail}) in event for verification. Event attendees: ${eventData.attendees.map((a: any) => a.emailAddress?.address).join(', ')}`);
+                        jsonResponse.success = false;
+                        jsonResponse._attendeeNotFound = true;
+                        jsonResponse._error = `Could not verify RSVP: User ${verifyUserEmail} not found in event attendees. Available attendees: ${eventData.attendees.map((a: any) => a.emailAddress?.address).join(', ')}`;
+                        jsonResponse.message = `⚠️ Could not verify RSVP: Your email (${verifyUserEmail}) was not found in the event attendees.`;
                         // Still mark as success but note verification couldn't be done
                         const action = response === 'accept' ? 'accepted' :
                                       response === 'tentative' ? 'tentatively accepted' :
@@ -1267,29 +1379,268 @@ export function registerGraphTools(
                 }
               }
               
-              // Special handling for list-mail-folders: add helper field to make correct ID explicit
+              // Special handling for list-mail-folders: add helper field and optionally fetch actual message counts
               if (tool.alias === 'list-mail-folders' && jsonResponse.value && Array.isArray(jsonResponse.value)) {
+                // Only fetch actual counts if explicitly requested (to avoid rate limits)
+                const fetchActualCounts = params.includeActualCounts === true;
+                
+                let folderCounts: Array<{ id: string | null; actualCount: number | null; unreadCount: number | null }> = [];
+                
+                // Always fetch actual counts (user requested this), but with aggressive rate limiting
+                // Process folders sequentially with delays to avoid 429 errors
+                const BATCH_SIZE = 1; // Process 1 folder at a time to avoid rate limits
+                const DELAY_BETWEEN_FOLDERS = 300; // 300ms delay between folders
+                const SKIP_UNREAD_COUNTS = true; // Skip unread counts to reduce API calls by 50%
+                
+                for (let i = 0; i < jsonResponse.value.length; i += BATCH_SIZE) {
+                  const batch = jsonResponse.value.slice(i, i + BATCH_SIZE);
+                  
+                  for (const folder of batch) {
+                    if (!folder || typeof folder !== 'object' || !folder.id) {
+                      folderCounts.push({ id: null, actualCount: null, unreadCount: null });
+                      continue;
+                    }
+                    
+                    try {
+                      // Use $count=true to get count efficiently
+                      const basePath = path.includes('/users/')
+                        ? path.replace(/\/mailFolders.*$/, '')
+                        : '/me';
+                      const folderPath = `${basePath}/mailFolders/${encodeURIComponent(folder.id)}/messages`;
+                      
+                      // Get total count
+                      const countResponse = await graphClient.graphRequest(
+                        `${folderPath}?$count=true&$top=0&$select=id`,
+                        { method: 'GET' }
+                      );
+                      
+                      if (countResponse.content && countResponse.content.length > 0) {
+                        const countData = JSON.parse(countResponse.content[0].text);
+                        const totalCount = countData['@odata.count'] ?? null;
+                        
+                        // Skip unread count to reduce API calls (use metadata unreadItemCount instead)
+                        const unreadCount = SKIP_UNREAD_COUNTS ? null : null;
+                        
+                        folderCounts.push({ id: folder.id, actualCount: totalCount, unreadCount });
+                      } else {
+                        folderCounts.push({ id: folder.id, actualCount: null, unreadCount: null });
+                      }
+                    } catch (error: any) {
+                      // Handle rate limiting gracefully - if we get 429, stop fetching and use metadata
+                      if (error.message && error.message.includes('429')) {
+                        logger.warn(`Rate limited while fetching counts. Stopping count fetching and using metadata for remaining ${jsonResponse.value.length - i} folders.`);
+                        // Fill remaining folders with null counts
+                        for (let j = i; j < jsonResponse.value.length; j++) {
+                          folderCounts.push({ id: jsonResponse.value[j]?.id || null, actualCount: null, unreadCount: null });
+                        }
+                        break; // Stop fetching counts
+                      } else {
+                        logger.debug(`Could not fetch actual count for folder ${folder.id}: ${error}`);
+                        folderCounts.push({ id: folder.id, actualCount: null, unreadCount: null });
+                      }
+                    }
+                    
+                    // Delay between folders to avoid rate limits
+                    if (i + 1 < jsonResponse.value.length) {
+                      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_FOLDERS));
+                    }
+                  }
+                }
+                
+                // Create a map of actual counts
+                const countsMap = new Map(
+                  folderCounts
+                    .filter((c: any) => c.id && c.actualCount !== null)
+                    .map((c: any) => [c.id, { actualCount: c.actualCount, unreadCount: c.unreadCount }])
+                );
+                
                 for (const folder of jsonResponse.value) {
                   if (folder && typeof folder === 'object' && folder.id) {
                     // Add explicit helper field pointing to the correct ID to use
                     folder.folderIdToUse = folder.id;
                     folder._useThisIdForFolderQueries = folder.id;
+                    
+                    // Add actual counts if available
+                    const actualCounts = countsMap.get(folder.id);
+                    if (actualCounts) {
+                      folder.actualMessageCount = actualCounts.actualCount;
+                      folder.actualUnreadCount = actualCounts.unreadCount;
+                      
+                      // Show both metadata and actual counts, but emphasize actual
+                      if (folder.totalItemCount !== undefined && folder.totalItemCount !== null) {
+                        const metadataCount = folder.totalItemCount;
+                        const actualCount = actualCounts.actualCount;
+                        
+                        if (Math.abs(metadataCount - actualCount) > 2) {
+                          folder._countDiscrepancy = true;
+                          folder._countNote = `Metadata shows ${metadataCount} items, but actual message count is ${actualCount}. The actual count (${actualCount}) is accurate.`;
+                        }
+                      }
+                    } else {
+                      // If we couldn't get actual count, keep the warning
+                      if (folder.totalItemCount !== undefined && folder.totalItemCount !== null) {
+                        folder._metadataNote = `⚠️  Note: totalItemCount (${folder.totalItemCount}) may be stale, cached, or include subfolders. ` +
+                          `To get accurate message count, query the folder directly using list-mail-messages with folderId="${folder.id}".`;
+                      }
+                    }
                   }
                 }
               }
               
-              // Special handling for list-calendar-events and get-calendar-event: add clear response status
+              // Validation for list-mail-folder-messages: verify messages actually belong to the requested folder
+              if (tool.alias === 'list-mail-folder-messages' && jsonResponse.value && Array.isArray(jsonResponse.value)) {
+                const requestedFolderId = params.mailFolderId || resolvedPathParams.mailFolderId;
+                if (requestedFolderId && typeof requestedFolderId === 'string') {
+                  // Fetch folder metadata to verify we're querying the correct folder
+                  try {
+                    const folderPath = path.includes('/users/') 
+                      ? path.replace(/\/messages.*$/, '')
+                      : `/me/mailFolders/${encodeURIComponent(requestedFolderId)}`;
+                    const folderResponse = await graphClient.graphRequest(folderPath, { method: 'GET' });
+                    if (folderResponse.content && folderResponse.content.length > 0) {
+                      const folderData = JSON.parse(folderResponse.content[0].text);
+                      const folderDisplayName = folderData.displayName || 'Unknown';
+                      const folderId = folderData.id || requestedFolderId;
+                      
+                      // Check for subfolders - they might explain the count discrepancy
+                      let hasSubfolders = false;
+                      let subfolderCount = 0;
+                      try {
+                        const subfoldersPath = folderPath.replace(/\/$/, '') + '/childFolders';
+                        const subfoldersResponse = await graphClient.graphRequest(subfoldersPath, { method: 'GET' });
+                        if (subfoldersResponse.content && subfoldersResponse.content.length > 0) {
+                          const subfoldersData = JSON.parse(subfoldersResponse.content[0].text);
+                          if (subfoldersData.value && Array.isArray(subfoldersData.value) && subfoldersData.value.length > 0) {
+                            hasSubfolders = true;
+                            subfolderCount = subfoldersData.value.length;
+                          }
+                        }
+                      } catch (e) {
+                        // Subfolder check failed, ignore
+                      }
+                      
+                      // Add folder info to response for verification
+                      jsonResponse._queriedFolder = {
+                        id: folderId,
+                        displayName: folderDisplayName,
+                        totalItemCount: folderData.totalItemCount,
+                        unreadItemCount: folderData.unreadItemCount,
+                        hasSubfolders: hasSubfolders,
+                        subfolderCount: subfolderCount,
+                        parentFolderId: folderData.parentFolderId
+                      };
+                      
+                      const folderTotalCount = folderData.totalItemCount || 0;
+                      const returnedCount = jsonResponse.value.length;
+                      
+                      logger.info(`📁 Queried folder: "${folderDisplayName}" (ID: ${folderId.substring(0, 50)}..., Total: ${folderTotalCount}, Unread: ${folderData.unreadItemCount || 'unknown'}, Returned: ${returnedCount})`);
+                      
+                      // Warn if folder ID doesn't match (shouldn't happen, but good to check)
+                      if (folderId !== requestedFolderId) {
+                        const warning = `⚠️  Folder ID mismatch: Requested "${requestedFolderId.substring(0, 50)}..." but got "${folderId.substring(0, 50)}..." (displayName: "${folderDisplayName}")`;
+                        logger.warn(warning);
+                        jsonResponse._folderIdMismatch = true;
+                        jsonResponse._warning = warning;
+                      }
+                      
+                      // Warn if folder metadata count differs significantly from returned message count
+                      // This can happen if: (1) folder metadata is stale/cached, (2) folder contains subfolders,
+                      // (3) folder contains items other than messages, (4) there's a sync issue, or
+                      // (5) folder was created from another folder and inherited the count
+                      if (folderTotalCount > 0 && returnedCount > 0) {
+                        const discrepancy = Math.abs(folderTotalCount - returnedCount);
+                        const discrepancyPercent = (discrepancy / Math.max(folderTotalCount, returnedCount)) * 100;
+                        
+                        // If discrepancy is large (more than 20% or more than 10 items), warn
+                        if (discrepancyPercent > 20 || discrepancy > 10) {
+                          let causes = [];
+                          if (hasSubfolders) {
+                            causes.push(`Folder contains ${subfolderCount} subfolder(s) - totalItemCount may include items in subfolders`);
+                          }
+                          causes.push('Folder metadata is stale/cached (Microsoft Graph API limitation)');
+                          causes.push('Folder may have been created from another folder and inherited the count');
+                          causes.push('Sync delay between Outlook and Graph API');
+                          
+                          const warning = `⚠️  COUNT DISCREPANCY: Folder "${folderDisplayName}" metadata reports ${folderTotalCount} total items, but query returned ${returnedCount} messages (difference: ${discrepancy}). ` +
+                            `Possible causes: ${causes.join('; ')}. ` +
+                            `The returned ${returnedCount} messages are the actual messages currently in this folder. ` +
+                            `${hasSubfolders ? `NOTE: This folder has ${subfolderCount} subfolder(s) - check if items are in subfolders. ` : ''}` +
+                            `To verify, check the folder in Outlook and compare with the returned message count.`;
+                          logger.warn(warning);
+                          jsonResponse._countDiscrepancy = true;
+                          jsonResponse._countWarning = warning;
+                          jsonResponse._metadataCount = folderTotalCount;
+                          jsonResponse._returnedCount = returnedCount;
+                        }
+                      } else if (folderTotalCount > 0 && returnedCount === 0) {
+                        // Folder metadata says there are items, but query returned none
+                        const warning = `⚠️  EMPTY RESULT: Folder "${folderDisplayName}" metadata reports ${folderTotalCount} total items, but query returned 0 messages. ` +
+                          `This may indicate: (1) All items are in subfolders, (2) Items are not messages, (3) Filter/query issue, or (4) Sync delay.`;
+                        logger.warn(warning);
+                        jsonResponse._emptyResultWarning = warning;
+                      }
+                    }
+                  } catch (folderError) {
+                    logger.warn(`Could not fetch folder metadata for validation: ${folderError}`);
+                  }
+                  
+                  // Validate messages belong to the requested folder
+                  let mismatchedCount = 0;
+                  const mismatchedMessages: string[] = [];
+                  
+                  for (const message of jsonResponse.value) {
+                    if (message && typeof message === 'object' && message.parentFolderId) {
+                      if (message.parentFolderId !== requestedFolderId) {
+                        mismatchedCount++;
+                        if (mismatchedMessages.length < 5) {
+                          mismatchedMessages.push(`Message ${message.id?.substring(0, 30) || 'unknown'} is in folder ${message.parentFolderId.substring(0, 30)}...`);
+                        }
+                      }
+                    }
+                  }
+                  
+                  if (mismatchedCount > 0) {
+                    const errorMsg = `⚠️  FOLDER MISMATCH: Requested folder "${requestedFolderId.substring(0, 50)}..." but ${mismatchedCount} of ${jsonResponse.value.length} messages belong to different folders. ` +
+                      `This usually means the folder ID is incorrect (e.g., using parentFolderId instead of folder id, or wrong folder entirely). ` +
+                      `SOLUTION: Call list-mail-folders with $select=id,displayName and find the exact folder by displayName (case-sensitive). ` +
+                      `Use the folder's "id" field (NOT parentFolderId) as folderId. ` +
+                      `Helper fields "folderIdToUse" or "_useThisIdForFolderQueries" from list-mail-folders point to the correct ID. ` +
+                      (mismatchedMessages.length > 0 ? `Sample mismatches: ${mismatchedMessages.join('; ')}` : '');
+                    logger.error(errorMsg);
+                    jsonResponse._folderMismatch = true;
+                    jsonResponse._error = errorMsg;
+                    jsonResponse._warning = errorMsg;
+                    jsonResponse._mismatchedCount = mismatchedCount;
+                    jsonResponse._totalCount = jsonResponse.value.length;
+                  } else if (jsonResponse.value.length > 0) {
+                    // All messages match - log success for debugging
+                    logger.info(`✓ Folder validation passed: All ${jsonResponse.value.length} messages belong to requested folder ${requestedFolderId.substring(0, 50)}...`);
+                  }
+                }
+              }
+              
+              // Special handling for calendar event queries: add clear response status and helper fields
               if (
-                (tool.alias === 'list-calendar-events' || tool.alias === 'get-calendar-event') &&
+                (tool.alias === 'list-calendar-events' || tool.alias === 'get-calendar-event' || tool.alias === 'get-calendar-view') &&
                 jsonResponse &&
                 typeof jsonResponse === 'object'
               ) {
-                const events = tool.alias === 'list-calendar-events' 
+                const events = (tool.alias === 'list-calendar-events' || tool.alias === 'get-calendar-view')
                   ? (jsonResponse.value || [])
                   : [jsonResponse];
                 const cachedEventIds: string[] = [];
                 
                 for (const event of events) {
+                  // Always add helper fields for all events with an ID, regardless of attendees
+                  if (event && typeof event === 'object' && event.id && typeof event.id === 'string') {
+                    cachedEventIds.push(event.id);
+                    // Always add helper fields for all events so they can be used for updates/RSVPs
+                    event.eventIdToUse = event.id;
+                    event._useThisEventIdForUpdates = event.id;
+                    event._calendarIdUsed = event.calendarId || null;
+                  }
+                  
+                  // Process attendee-specific information if attendees exist
                   if (event && typeof event === 'object' && event.attendees && Array.isArray(event.attendees)) {
                     // Find the authenticated user's attendee entry
                     // Use the impersonated user already determined in the handler
@@ -1301,16 +1652,9 @@ export function registerGraphTools(
                       // Use exact match for consistency
                       return email === eventUserEmail;
                     });
-                    
-                    if (event.id && typeof event.id === 'string') {
-                      cachedEventIds.push(event.id);
-                    }
 
                     if (userAttendee) {
                       const responseStatus = userAttendee.status?.response || 'none';
-                      event.eventIdToUse = event.id;
-                      event._useThisEventIdForUpdates = event.id;
-                      event._calendarIdUsed = event.calendarId || null;
 
                       if (responseStatus === 'none' || responseStatus === null || responseStatus === undefined) {
                         event._responseStatus = 'notAccepted';
@@ -1636,7 +1980,13 @@ export function registerGraphTools(
       folderId: z
         .string()
         .describe(
-          'Optional mail folder id to scope results. MUST be the folder\'s "id" field from list-mail-folders response (NOT parentFolderId). Use the exact "id" value of the target folder.'
+          'Optional mail folder id to scope results. MUST be the folder\'s "id" field from list-mail-folders response (NOT parentFolderId). Use the exact "id" value of the target folder. Alias: mailFolderId (both accepted).'
+        )
+        .optional(),
+      mailFolderId: z
+        .string()
+        .describe(
+          'Optional mail folder id (alias for folderId). MUST be the folder\'s "id" field from list-mail-folders response (NOT parentFolderId). Use the exact "id" value of the target folder.'
         )
         .optional(),
       sharedMailboxId: z
@@ -1650,7 +2000,14 @@ export function registerGraphTools(
     };
 
     registerWrapperTool(base.alias, base.description, schema, base.metadata, async (params) => {
-      const { folderId, sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      // Accept both folderId and mailFolderId for compatibility
+      const folderId = params.folderId || params.mailFolderId;
+      const { sharedMailboxId, sharedMailboxEmail, ...rest } = params;
+      // Remove mailFolderId from rest if it was used, to avoid passing it twice
+      if (params.mailFolderId && !params.folderId) {
+        delete (rest as any).mailFolderId;
+      }
+      
       const sharedTarget =
         typeof sharedMailboxId === 'string' && sharedMailboxId.trim().length > 0
           ? sharedMailboxId
