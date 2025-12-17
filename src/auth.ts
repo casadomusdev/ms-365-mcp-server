@@ -35,7 +35,7 @@ const SELECTED_ACCOUNT_PATH = path.join(FALLBACK_DIR, '.selected-account.json');
 
 const DEFAULT_CONFIG: Configuration = {
   auth: {
-    clientId: process.env.MS365_MCP_CLIENT_ID || '084a3e9f-a9f4-43f7-89f9-d229cf97853e',
+    clientId: process.env.MS365_MCP_CLIENT_ID!,
     authority: `https://login.microsoftonline.com/${process.env.MS365_MCP_TENANT_ID || 'common'}`,
   },
 };

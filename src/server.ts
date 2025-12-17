@@ -163,15 +163,11 @@ class MicrosoftGraphServer {
       }
     } catch {}
 
-    // Debug: Check if environment variables are loaded
+    // Debug: Check if environment variables are loaded (no sensitive data)
     logger.info('Environment Variables Check:', {
-      CLIENT_ID: process.env.MS365_MCP_CLIENT_ID
-        ? `${process.env.MS365_MCP_CLIENT_ID.substring(0, 8)}...`
-        : 'NOT SET',
-      CLIENT_SECRET: process.env.MS365_MCP_CLIENT_SECRET
-        ? `${process.env.MS365_MCP_CLIENT_SECRET.substring(0, 8)}...`
-        : 'NOT SET',
-      TENANT_ID: process.env.MS365_MCP_TENANT_ID || 'NOT SET',
+      CLIENT_ID: process.env.MS365_MCP_CLIENT_ID ? 'SET' : 'NOT SET',
+      CLIENT_SECRET: process.env.MS365_MCP_CLIENT_SECRET ? 'SET' : 'NOT SET',
+      TENANT_ID: process.env.MS365_MCP_TENANT_ID ? 'SET' : 'NOT SET',
       NODE_ENV: process.env.NODE_ENV || 'NOT SET',
     });
 
@@ -258,6 +254,23 @@ class MicrosoftGraphServer {
         string,
         { count: number; windowStart: number }
       >();
+
+      // Periodic cleanup of stale rate limit buckets (every 5 minutes)
+      const cleanupIntervalMs = 5 * 60 * 1000;
+      setInterval(() => {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [ip, bucket] of buckets) {
+          if (now - bucket.windowStart >= rateWindowMs) {
+            buckets.delete(ip);
+            cleaned++;
+          }
+        }
+        if (cleaned > 0) {
+          logger.debug(`Rate limit cleanup: removed ${cleaned} stale buckets`);
+        }
+      }, cleanupIntervalMs).unref(); // unref() allows process to exit even if interval is active
+
       app.use('/mcp', (req, res, next) => {
         try {
           const ip = (req.ip || req.socket.remoteAddress || 'unknown').toString();
@@ -410,7 +423,7 @@ class MicrosoftGraphServer {
       app.get('/authorize', async (req, res) => {
         const url = new URL(req.url!, `${req.protocol}://${req.get('host')}`);
         const tenantId = process.env.MS365_MCP_TENANT_ID || 'common';
-        const clientId = process.env.MS365_MCP_CLIENT_ID || '084a3e9f-a9f4-43f7-89f9-d229cf97853e';
+        const clientId = process.env.MS365_MCP_CLIENT_ID!;
         const microsoftAuthUrl = new URL(
           `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`
         );
@@ -486,7 +499,7 @@ class MicrosoftGraphServer {
           if (body.grant_type === 'authorization_code') {
             const tenantId = process.env.MS365_MCP_TENANT_ID || 'common';
             const clientId =
-              process.env.MS365_MCP_CLIENT_ID || '084a3e9f-a9f4-43f7-89f9-d229cf97853e';
+              process.env.MS365_MCP_CLIENT_ID!;
             const clientSecret = process.env.MS365_MCP_CLIENT_SECRET;
 
             if (!clientSecret) {
@@ -510,7 +523,7 @@ class MicrosoftGraphServer {
           } else if (body.grant_type === 'refresh_token') {
             const tenantId = process.env.MS365_MCP_TENANT_ID || 'common';
             const clientId =
-              process.env.MS365_MCP_CLIENT_ID || '084a3e9f-a9f4-43f7-89f9-d229cf97853e';
+              process.env.MS365_MCP_CLIENT_ID!;
             const clientSecret = process.env.MS365_MCP_CLIENT_SECRET;
 
             if (!clientSecret) {
